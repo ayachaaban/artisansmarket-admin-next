@@ -1,295 +1,256 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import {
-  collection,
-  doc,
-  getDocs,
-  orderBy,
-  query,
-  updateDoc,
-  deleteDoc,
-} from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { collection, deleteDoc, doc, getDocs, limit, orderBy, query } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { PageHeader } from '@/components/page-header';
-import { SearchInput } from '@/components/search-input';
-import { FilterChips } from '@/components/filter-chips';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { asDate, money, statusPillClass } from '@/lib/format';
-import { cn, fmtDate } from '@/lib/utils';
-import { Loader2, Trash2, RefreshCw, Film, Image as ImageIcon } from 'lucide-react';
+import { toDate } from '@/lib/legacy';
+import { useDetail } from '@/components/detail-modals';
+import { confirmDialog, toast } from '@/lib/ui';
+import { exportPageTable } from '@/lib/export';
 
 type Post = {
   id: string;
-  artistId: string;
-  artistName: string;
-  category: string;
-  description: string;
-  price: number;
-  imageUrl: string;
-  videoUrl?: string;
+  artistName?: string;
+  category?: string;
+  description?: string;
+  status?: string;
+  mediaType?: string;
+  imageUrl?: string;
   thumbnailUrl?: string;
-  mediaType: string;
-  status: string;
-  createdAt: Date | null;
+  videoDurationSec?: number;
+  createdAt?: unknown;
 };
 
-export default function PostsPage() {
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState('');
-  const [statusFilter, setStatusFilter] = useState<
-    'all' | 'active' | 'reported' | 'removed' | 'sold'
-  >('all');
-  const [mediaFilter, setMediaFilter] = useState<'all' | 'post' | 'reel'>('all');
-  const [selected, setSelected] = useState<Post | null>(null);
+const PAGE_SIZE = 20;
+const CATEGORIES = [
+  'Painting', 'Sculpture', 'Photography', 'Digital Art', 'Crafts', 'Pottery', 'Jewelry',
+  'Woodwork', 'Textiles', 'Knitting & Crochet', 'Leather', 'Glasswork', 'Calligraphy',
+  'Illustration', 'Printmaking', 'Metalwork', 'Candles & Soap', 'Mosaic', 'Embroidery',
+  'Paper Art', 'Resin Art', 'Mixed Media',
+];
+const ExportIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+    <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z" />
+    <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z" />
+  </svg>
+);
 
-  async function load() {
+export default function PostsPage() {
+  const { openPost } = useDetail();
+  const [all, setAll] = useState<Post[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [category, setCategory] = useState('');
+  const [status, setStatus] = useState('');
+  const [media, setMedia] = useState('');
+  const [search, setSearch] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [page, setPage] = useState(1);
+
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(query(collection(db, 'posts'), orderBy('createdAt', 'desc')));
-      setPosts(
-        snap.docs.map((d) => {
-          const x = d.data() as Record<string, unknown>;
-          return {
-            id: d.id,
-            artistId: (x.artistId as string) ?? '',
-            artistName: (x.artistName as string) ?? '',
-            category: (x.category as string) ?? '',
-            description: (x.description as string) ?? '',
-            price: (x.price as number) ?? 0,
-            imageUrl: (x.imageUrl as string) ?? '',
-            videoUrl: x.videoUrl as string | undefined,
-            thumbnailUrl: x.thumbnailUrl as string | undefined,
-            mediaType: (x.mediaType as string) ?? 'post',
-            status: (x.status as string) ?? 'active',
-            createdAt: asDate(x.createdAt),
-          };
-        }),
-      );
+      const snap = await getDocs(query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(500)));
+      setAll(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Post, 'id'>) })));
+    } catch {
+      setAll([]);
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
+  useEffect(() => {
+    setPage(1);
+  }, [category, status, media, search, from, to]);
 
   const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    return posts.filter((p) => {
-      if (statusFilter !== 'all' && p.status !== statusFilter) return false;
-      if (mediaFilter !== 'all' && p.mediaType !== mediaFilter) return false;
-      if (!s) return true;
+    const s = search.toLowerCase();
+    const fromMs = from ? new Date(from).getTime() : null;
+    const toMs = to ? new Date(to).getTime() + 86400000 : null;
+    return all.filter((p) => {
+      if (category && p.category !== category) return false;
+      if (status && p.status !== status) return false;
+      if (media && p.mediaType !== media) return false;
+      if (s && !(p.artistName || '').toLowerCase().includes(s)) return false;
+      const d = toDate(p.createdAt);
+      if (fromMs && (!d || d.getTime() < fromMs)) return false;
+      if (toMs && (!d || d.getTime() > toMs)) return false;
+      return true;
+    });
+  }, [all, category, status, media, search, from, to]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  async function remove(id: string) {
+    if (!(await confirmDialog({ title: 'Delete Post', message: 'Delete this post? This cannot be undone.', confirmText: 'Delete', type: 'danger' }))) return;
+    await deleteDoc(doc(db, 'posts', id));
+    toast('Post deleted.', 'success');
+    load();
+  }
+
+  const renderRows = () => {
+    if (loading)
       return (
-        p.artistName.toLowerCase().includes(s) ||
-        p.category.toLowerCase().includes(s) ||
-        p.description.toLowerCase().includes(s)
+        <tr>
+          <td colSpan={8} className="text-center">
+            Loading...
+          </td>
+        </tr>
+      );
+    if (pageRows.length === 0)
+      return (
+        <tr>
+          <td colSpan={8} className="text-center">
+            No posts found
+          </td>
+        </tr>
+      );
+    return pageRows.map((p) => {
+      const isReel = p.mediaType === 'reel';
+      const src = isReel
+        ? p.thumbnailUrl || p.imageUrl || 'https://via.placeholder.com/60'
+        : p.imageUrl || 'https://via.placeholder.com/60';
+      const desc =
+        p.description && p.description.length > 40 ? p.description.substring(0, 40) + '...' : p.description || 'N/A';
+      const d = toDate(p.createdAt);
+      return (
+        <tr
+          key={p.id}
+          style={{ cursor: 'pointer' }}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest('button')) return;
+            openPost(p.id);
+          }}
+        >
+          <td>
+            <div style={{ position: 'relative', width: 60, height: 60, borderRadius: 6, overflow: 'hidden', background: '#f0f0f0' }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={src} alt={isReel ? 'Reel' : 'Post'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+              {isReel && (
+                <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 22 }}>
+                  ▶
+                </div>
+              )}
+            </div>
+          </td>
+          <td>
+            <span
+              className="status-badge"
+              style={isReel ? { background: 'rgba(139,92,246,0.15)', color: '#8B5CF6' } : { background: 'rgba(46,134,171,0.15)', color: '#2E86AB' }}
+            >
+              {isReel ? 'Reel' : 'Post'}
+            </span>
+          </td>
+          <td>{p.artistName || 'Unknown'}</td>
+          <td>{p.category || 'N/A'}</td>
+          <td>{desc}</td>
+          <td>
+            <span className={'status-badge status-' + (p.status || 'active')}>{p.status || 'active'}</span>
+          </td>
+          <td>{d ? d.toLocaleDateString() : 'N/A'}</td>
+          <td>
+            <button className="btn-action btn-delete" onClick={() => remove(p.id)}>
+              Delete
+            </button>
+          </td>
+        </tr>
       );
     });
-  }, [posts, q, statusFilter, mediaFilter]);
-
-  async function setStatus(p: Post, status: string) {
-    await updateDoc(doc(db, 'posts', p.id), { status });
-    setPosts((prev) => prev.map((x) => (x.id === p.id ? { ...x, status } : x)));
-    if (selected?.id === p.id) setSelected({ ...p, status });
-  }
-
-  async function remove(p: Post) {
-    if (!confirm(`Delete this post by ${p.artistName}? This cannot be undone.`)) return;
-    await deleteDoc(doc(db, 'posts', p.id));
-    setPosts((prev) => prev.filter((x) => x.id !== p.id));
-    if (selected?.id === p.id) setSelected(null);
-  }
+  };
 
   return (
-    <div className="px-8 py-8">
-      <PageHeader
-        title="Posts"
-        subtitle={loading ? 'Loading…' : `${filtered.length} of ${posts.length} posts`}
-      >
-        <SearchInput value={q} onChange={setQ} placeholder="Search artist, category, description" />
-        <FilterChips
-          value={statusFilter}
-          onChange={setStatusFilter}
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'active', label: 'Active' },
-            { value: 'reported', label: 'Reported' },
-            { value: 'removed', label: 'Removed' },
-            { value: 'sold', label: 'Sold' },
-          ]}
-        />
-        <FilterChips
-          value={mediaFilter}
-          onChange={setMediaFilter}
-          options={[
-            { value: 'all', label: 'All media' },
-            { value: 'post', label: 'Posts' },
-            { value: 'reel', label: 'Reels' },
-          ]}
-        />
-      </PageHeader>
-
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wider text-slate-500">
-            <tr>
-              <th className="px-5 py-3 font-semibold">Media</th>
-              <th className="px-5 py-3 font-semibold">Artist</th>
-              <th className="px-5 py-3 font-semibold">Category</th>
-              <th className="px-5 py-3 font-semibold">Price</th>
-              <th className="px-5 py-3 font-semibold">Status</th>
-              <th className="px-5 py-3 font-semibold">Created</th>
-              <th className="px-5 py-3 text-right font-semibold">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {loading ? (
-              <tr>
-                <td colSpan={7} className="px-5 py-12 text-center">
-                  <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-400" />
-                </td>
-              </tr>
-            ) : filtered.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-5 py-12 text-center text-sm text-slate-500">
-                  No posts match.
-                </td>
-              </tr>
-            ) : (
-              filtered.map((p) => (
-                <tr
-                  key={p.id}
-                  className="cursor-pointer hover:bg-slate-50"
-                  onClick={() => setSelected(p)}
-                >
-                  <td className="px-5 py-3">
-                    <div className="relative h-12 w-12 overflow-hidden rounded-md bg-slate-100">
-                      {p.imageUrl || p.thumbnailUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={p.thumbnailUrl || p.imageUrl}
-                          alt=""
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-slate-400">
-                          {p.mediaType === 'reel' ? <Film className="h-5 w-5" /> : <ImageIcon className="h-5 w-5" />}
-                        </div>
-                      )}
-                      {p.mediaType === 'reel' && (
-                        <span className="absolute right-0.5 top-0.5 rounded bg-black/60 px-1 text-[9px] font-bold text-white">
-                          REEL
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <p className="font-medium">{p.artistName || '—'}</p>
-                    <p className="line-clamp-1 text-xs text-slate-500">{p.description}</p>
-                  </td>
-                  <td className="px-5 py-3 capitalize text-slate-700">{p.category}</td>
-                  <td className="px-5 py-3 text-slate-700">{money(p.price)}</td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={cn(
-                        'rounded-full px-2 py-0.5 text-xs font-semibold capitalize',
-                        statusPillClass(p.status),
-                      )}
-                    >
-                      {p.status}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-slate-500">{fmtDate(p.createdAt)}</td>
-                  <td className="px-5 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="sm" onClick={() => setSelected(p)}>
-                      View
-                    </Button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+    <div className="page-content active" id="postsPage">
+      <div className="d-flex justify-content-between align-items-center mb-2">
+        <h2 className="page-title mb-0">Posts Management</h2>
+        <button className="btn-export" onClick={() => exportPageTable('posts')}>
+          <ExportIcon />
+          Export Excel
+        </button>
       </div>
 
-      <Dialog open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <DialogContent>
-          {selected && (
-            <div className="flex max-h-[90vh] flex-col">
-              <div className="border-b border-slate-200 px-6 py-5">
-                <DialogTitle className="text-lg font-semibold">Post detail</DialogTitle>
-                <p className="mt-1 text-sm text-slate-500">by {selected.artistName}</p>
-              </div>
-              <div className="grid grid-cols-1 gap-6 overflow-y-auto px-6 py-6 md:grid-cols-2">
-                <div>
-                  <div className="aspect-square w-full overflow-hidden rounded-lg bg-slate-100">
-                    {selected.videoUrl ? (
-                      <video src={selected.videoUrl} controls className="h-full w-full object-cover" />
-                    ) : selected.imageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={selected.imageUrl} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-slate-400">
-                        No media
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="space-y-3 text-sm">
-                  <Detail label="Description" value={selected.description || '—'} />
-                  <Detail label="Category" value={selected.category} />
-                  <Detail label="Price" value={money(selected.price)} />
-                  <Detail label="Media type" value={selected.mediaType} />
-                  <Detail label="Status" value={selected.status} />
-                  <Detail label="Created" value={fmtDate(selected.createdAt)} />
-                  <Detail label="Post ID" value={selected.id} mono />
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-4">
-                {selected.status === 'removed' ? (
-                  <Button onClick={() => setStatus(selected, 'active')}>
-                    <RefreshCw className="h-4 w-4" />
-                    Reactivate
-                  </Button>
-                ) : (
-                  <Button variant="outline" onClick={() => setStatus(selected, 'removed')}>
-                    Remove
-                  </Button>
-                )}
-                <Button variant="destructive" onClick={() => remove(selected)}>
-                  <Trash2 className="h-4 w-4" />
-                  Delete
-                </Button>
-                <Button variant="outline" onClick={() => setSelected(null)}>
-                  Close
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
+      <div className="filters">
+        <select className="form-select filter-select" value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">All Categories</option>
+          {CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <select className="form-select filter-select" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">All Status</option>
+          <option value="active">Active</option>
+          <option value="reported">Reported</option>
+          <option value="removed">Removed</option>
+        </select>
+        <select className="form-select filter-select" value={media} onChange={(e) => setMedia(e.target.value)}>
+          <option value="">All Media</option>
+          <option value="post">Posts (images)</option>
+          <option value="reel">Reels (videos)</option>
+        </select>
+        <input
+          type="text"
+          className="form-control filter-select"
+          placeholder="Search by artist name..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
 
-function Detail({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div>
-      <p className="mb-0.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
-        {label}
-      </p>
-      <p
-        className={cn(
-          'rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800',
-          mono && 'font-mono text-xs',
-        )}
-      >
-        {value}
-      </p>
+      <div className="date-filter-bar filters" style={{ alignItems: 'center' }}>
+        <span className="text-muted" style={{ fontSize: 13 }}>
+          From
+        </span>
+        <input type="date" className="form-control filter-select" style={{ maxWidth: 170 }} value={from} onChange={(e) => setFrom(e.target.value)} />
+        <span className="text-muted" style={{ fontSize: 13 }}>
+          To
+        </span>
+        <input type="date" className="form-control filter-select" style={{ maxWidth: 170 }} value={to} onChange={(e) => setTo(e.target.value)} />
+        <button
+          className="btn-action btn-view"
+          onClick={() => {
+            setFrom('');
+            setTo('');
+          }}
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="table-responsive">
+        <table className="table custom-table">
+          <thead>
+            <tr>
+              <th>Media</th>
+              <th>Type</th>
+              <th>Artist Name</th>
+              <th>Category</th>
+              <th>Description</th>
+              <th>Status</th>
+              <th>Created At</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>{renderRows()}</tbody>
+        </table>
+      </div>
+      <div className="pagination-controls d-flex justify-content-between align-items-center mt-3">
+        <span className="text-muted">
+          Page {page} of {totalPages}
+        </span>
+        <div>
+          <button className="btn-action btn-view" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            Previous
+          </button>
+          <button className="btn-action btn-view" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+            Next
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

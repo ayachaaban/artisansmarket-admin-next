@@ -1,251 +1,455 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { collection, getDocs } from 'firebase/firestore';
 import {
-  LineChart,
-  Line,
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  CartesianGrid,
 } from 'recharts';
 import { db } from '@/lib/firebase';
-import { PageHeader } from '@/components/page-header';
-import { StatCard } from '@/components/stat-card';
-import { asDate, money } from '@/lib/format';
-import { Loader2, Users, ShoppingBag, DollarSign, TrendingUp } from 'lucide-react';
+import { money, toDate } from '@/lib/legacy';
 
-type Range = '7d' | '30d' | '90d' | 'all';
+type Doc = Record<string, unknown>;
 
-const RANGES: Record<Range, number | null> = {
-  '7d': 7,
-  '30d': 30,
-  '90d': 90,
-  all: null,
+const STATUS_COLORS: Record<string, string> = {
+  pending: '#E8B547',
+  in_progress: '#5B8FA8',
+  paid: '#5B8FA8',
+  processing: '#5B8FA8',
+  shipping: '#D67847',
+  shipped: '#D67847',
+  delivered: '#7A9B5C',
+  cancelled: '#B5413B',
 };
+const STATUS_LABEL: Record<string, string> = {
+  pending: 'Pending',
+  in_progress: 'In Progress',
+  shipping: 'Shipping',
+  delivered: 'Delivered',
+  paid: 'Paid',
+  processing: 'Processing',
+  shipped: 'Shipped',
+  cancelled: 'Cancelled',
+};
+const CATEGORY_PALETTE = ['#6F8FA3', '#C96A3D', '#E3A93C', '#7A9A7A', '#A44A3F', '#C98A5B'];
+
+function fmtDay(d: Date) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 
 export default function AnalyticsPage() {
-  const [users, setUsers] = useState<Array<{ createdAt: Date | null }>>([]);
-  const [orders, setOrders] = useState<
-    Array<{ createdAt: Date | null; total: number; status: string }>
-  >([]);
-  const [posts, setPosts] = useState<Array<{ category: string }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState<Range>('30d');
+  const [users, setUsers] = useState<Doc[]>([]);
+  const [posts, setPosts] = useState<Doc[]>([]);
+  const [orders, setOrders] = useState<Doc[]>([]);
+  const [reports, setReports] = useState<Doc[]>([]);
+  const [ratings, setRatings] = useState<Doc[]>([]);
+  const [range, setRange] = useState('all');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [artistsSort, setArtistsSort] = useState<'earnings' | 'orders' | 'rating'>('earnings');
+  const [catSort, setCatSort] = useState<'posts' | 'orders'>('posts');
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [u, o, p] = await Promise.all([
-          getDocs(collection(db, 'users')),
-          getDocs(collection(db, 'orders')),
-          getDocs(collection(db, 'posts')),
-        ]);
-        setUsers(
-          u.docs.map((d) => ({
-            createdAt: asDate((d.data() as { createdAt?: unknown }).createdAt),
-          })),
-        );
-        setOrders(
-          o.docs.map((d) => {
-            const x = d.data() as Record<string, unknown>;
-            return {
-              createdAt: asDate(x.createdAt),
-              total: (x.total as number) ?? 0,
-              status: (x.status as string) ?? 'pending',
-            };
-          }),
-        );
-        setPosts(
-          p.docs.map((d) => ({
-            category: ((d.data() as { category?: string }).category as string) ?? '',
-          })),
-        );
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const load = useCallback(async () => {
+    try {
+      const [u, p, o, r, rt] = await Promise.all([
+        getDocs(collection(db, 'users')),
+        getDocs(collection(db, 'posts')),
+        getDocs(collection(db, 'orders')),
+        getDocs(collection(db, 'reports')).catch(() => ({ docs: [] }) as never),
+        getDocs(collection(db, 'ratings')).catch(() => ({ docs: [] }) as never),
+      ]);
+      setUsers(u.docs.map((d) => d.data()));
+      setPosts(p.docs.map((d) => d.data()));
+      setOrders(o.docs.map((d) => d.data()));
+      setReports(r.docs.map((d) => d.data()));
+      setRatings(rt.docs.map((d) => d.data()));
+    } catch {
+      /* ignore */
+    }
   }, []);
 
-  const cutoff = useMemo(() => {
-    const days = RANGES[range];
-    if (!days) return null;
-    return Date.now() - days * 24 * 60 * 60 * 1000;
-  }, [range]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  const inRange = <T extends { createdAt: Date | null }>(rows: T[]): T[] =>
-    cutoff === null ? rows : rows.filter((r) => (r.createdAt?.getTime() ?? 0) >= cutoff);
+  const [start, end] = useMemo(() => {
+    const now = new Date();
+    now.setHours(23, 59, 59, 999);
+    if (range === 'custom' && from && to) return [new Date(from + 'T00:00:00'), new Date(to + 'T23:59:59')];
+    return [new Date(2020, 0, 1), now];
+  }, [range, from, to]);
 
-  const usersR = useMemo(() => inRange(users), [users, cutoff]);
-  const ordersR = useMemo(() => inRange(orders), [orders, cutoff]);
+  const inRange = useCallback(
+    (doc: Doc) => {
+      const d = toDate(doc.createdAt);
+      if (!d) return false;
+      const t = d.getTime();
+      return t >= start.getTime() && t <= end.getTime();
+    },
+    [start, end],
+  );
 
-  const kpis = useMemo(() => {
-    const revenue = ordersR
-      .filter((o) =>
-        ['delivered', 'shipping', 'in_progress', 'shipped', 'paid', 'processing'].includes(
-          o.status,
+  const data = useMemo(() => {
+    const u = users.filter(inRange);
+    const p = posts.filter(inRange);
+    const o = orders.filter(inRange);
+    const rep = reports.filter(inRange);
+
+    const kpis = [
+      { label: 'New users', value: String(u.length), accent: '#84CC16' },
+      { label: 'New artists', value: String(u.filter((d) => d.role === 'artist').length), accent: '#B85C38' },
+      { label: 'New posts', value: String(p.length), accent: '#1B998B' },
+      { label: 'New reels', value: String(p.filter((d) => d.mediaType === 'reel').length), accent: '#F59E0B' },
+      { label: 'Orders', value: String(o.length), accent: '#2E86AB' },
+      {
+        label: 'Revenue',
+        value: money(
+          o.reduce(
+            (s, d) =>
+              ['shipping', 'delivered', 'shipped'].includes(d.status as string)
+                ? s + ((d.total as number) || (d.totalAmount as number) || 0)
+                : s,
+            0,
+          ),
         ),
-      )
-      .reduce((s, o) => s + o.total, 0);
-    const aov = ordersR.length ? revenue / ordersR.length : 0;
-    return {
-      users: usersR.length,
-      orders: ordersR.length,
-      revenue,
-      aov,
-    };
-  }, [usersR, ordersR]);
+        accent: '#10B981',
+      },
+      { label: 'Reports', value: String(rep.length), accent: '#A53A33' },
+    ];
 
-  const userGrowth = useMemo(() => buildDailyCount(usersR), [usersR]);
-  const revenueByDay = useMemo(() => buildDailySum(ordersR), [ordersR]);
-  const byCategory = useMemo(() => {
-    const map: Record<string, number> = {};
-    posts.forEach((p) => {
-      if (!p.category) return;
-      map[p.category] = (map[p.category] ?? 0) + 1;
+    // day buckets
+    const days: string[] = [];
+    const cursor = new Date(start);
+    cursor.setHours(0, 0, 0, 0);
+    const last = new Date(end);
+    last.setHours(0, 0, 0, 0);
+    while (cursor.getTime() <= last.getTime()) {
+      days.push(fmtDay(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    const usersByDay: Record<string, number> = Object.fromEntries(days.map((d) => [d, 0]));
+    const revByDay: Record<string, number> = Object.fromEntries(days.map((d) => [d, 0]));
+    u.forEach((d) => {
+      const dt = toDate(d.createdAt);
+      if (dt) {
+        const k = fmtDay(dt);
+        if (usersByDay[k] != null) usersByDay[k]++;
+      }
     });
-    return Object.entries(map)
-      .map(([category, count]) => ({ category, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8);
-  }, [posts]);
+    o.forEach((d) => {
+      if (!['shipping', 'delivered', 'shipped'].includes(d.status as string)) return;
+      const dt = toDate(d.createdAt);
+      if (dt) {
+        const k = fmtDay(dt);
+        if (revByDay[k] != null) revByDay[k] += (d.total as number) || (d.totalAmount as number) || 0;
+      }
+    });
+    const lineData = days.map((d) => ({ day: d, users: usersByDay[d], rev: revByDay[d] }));
 
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-      </div>
-    );
-  }
+    const statusCounts: Record<string, number> = {};
+    o.forEach((d) => {
+      const s = (d.status as string) || 'unknown';
+      if (s === 'refunded') return;
+      statusCounts[s] = (statusCounts[s] || 0) + 1;
+    });
+    const statusData = Object.entries(statusCounts).map(([k, v]) => ({
+      name: STATUS_LABEL[k] || k,
+      value: v,
+      color: STATUS_COLORS[k] || '#B85C38',
+    }));
+
+    const catCounts: Record<string, number> = {};
+    p.forEach((d) => {
+      const c = (d.category as string) || 'Uncategorised';
+      catCounts[c] = (catCounts[c] || 0) + 1;
+    });
+    const catData = Object.entries(catCounts).map(([k, v], i) => ({
+      name: k,
+      value: v,
+      color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length],
+    }));
+
+    // top artists
+    const artistAgg: Record<string, { id: string; name: string; earnings: number; orders: number; rating: number; _rs?: number; _rc?: number }> = {};
+    o.forEach((d) => {
+      const aid = d.artistId as string;
+      if (!aid) return;
+      if (!artistAgg[aid]) artistAgg[aid] = { id: aid, name: (d.artistName as string) || 'Unknown', earnings: 0, orders: 0, rating: 0 };
+      if (['shipping', 'delivered', 'shipped'].includes(d.status as string))
+        artistAgg[aid].earnings += (d.total as number) || (d.totalAmount as number) || 0;
+      artistAgg[aid].orders++;
+    });
+    ratings.forEach((d) => {
+      const a = artistAgg[d.artistId as string];
+      if (a) {
+        a._rs = (a._rs || 0) + ((d.stars as number) || 0);
+        a._rc = (a._rc || 0) + 1;
+      }
+    });
+    Object.values(artistAgg).forEach((a) => (a.rating = a._rc ? (a._rs || 0) / a._rc : 0));
+
+    const catAgg: Record<string, { name: string; posts: number; orders: number }> = {};
+    p.forEach((d) => {
+      const c = (d.category as string) || 'Uncategorised';
+      if (!catAgg[c]) catAgg[c] = { name: c, posts: 0, orders: 0 };
+      catAgg[c].posts++;
+    });
+    o.forEach((d) => {
+      (d.items as { category?: string }[] | undefined)?.forEach((it) => {
+        const c = it.category || 'Uncategorised';
+        if (!catAgg[c]) catAgg[c] = { name: c, posts: 0, orders: 0 };
+        catAgg[c].orders++;
+      });
+    });
+
+    return {
+      kpis,
+      lineData,
+      statusData,
+      catData,
+      artists: Object.values(artistAgg),
+      categories: Object.values(catAgg),
+    };
+  }, [users, posts, orders, reports, ratings, inRange, start, end]);
+
+  const topArtists = [...data.artists].sort((a, b) => (b[artistsSort] || 0) - (a[artistsSort] || 0)).slice(0, 10);
+  const topCats = [...data.categories].sort((a, b) => (b[catSort] || 0) - (a[catSort] || 0)).slice(0, 10);
+  const tickInterval = Math.max(0, Math.floor(data.lineData.length / 12));
 
   return (
-    <div className="px-8 py-8">
-      <PageHeader title="Analytics" subtitle="Trends, revenue, and growth.">
-        <div className="flex rounded-md border border-slate-200 bg-white p-0.5 text-sm">
-          {(['7d', '30d', '90d', 'all'] as Range[]).map((r) => (
-            <button
-              key={r}
-              onClick={() => setRange(r)}
-              className={
-                'rounded px-3 py-1.5 text-xs font-semibold uppercase transition-colors ' +
-                (range === r
-                  ? 'bg-slate-900 text-white'
-                  : 'text-slate-600 hover:bg-slate-100')
-              }
-            >
-              {r}
-            </button>
-          ))}
+    <div className="page-content active" id="analyticsPage">
+      <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap" style={{ gap: 10 }}>
+        <h2 className="page-title mb-0">Analytics</h2>
+        <div className="filters" style={{ margin: 0, alignItems: 'center' }}>
+          <select className="form-select filter-select" style={{ minWidth: 180 }} value={range} onChange={(e) => setRange(e.target.value)}>
+            <option value="all">All time</option>
+            <option value="custom">Custom range…</option>
+          </select>
+          {range === 'custom' && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: '0.78rem', color: '#8E8E8E' }}>From</span>
+              <input type="date" className="form-control filter-select" style={{ width: 155 }} value={from} onChange={(e) => setFrom(e.target.value)} />
+              <span style={{ fontSize: '0.78rem', color: '#8E8E8E' }}>To</span>
+              <input type="date" className="form-control filter-select" style={{ width: 155 }} value={to} onChange={(e) => setTo(e.target.value)} />
+            </span>
+          )}
+          <button
+            onClick={load}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              padding: '0.45rem 1rem',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              color: '#2E86AB',
+              background: 'transparent',
+              border: '1.5px solid #2E86AB',
+              borderRadius: 8,
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+          >
+            Refresh
+          </button>
         </div>
-      </PageHeader>
-
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-        <StatCard label="New users" value={kpis.users} icon={Users} />
-        <StatCard label="Orders" value={kpis.orders} icon={ShoppingBag} />
-        <StatCard label="Revenue" value={money(kpis.revenue)} icon={DollarSign} tone="success" />
-        <StatCard
-          label="Avg order value"
-          value={money(kpis.aov)}
-          icon={TrendingUp}
-        />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <ChartCard title="User growth">
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={userGrowth}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis dataKey="d" tick={{ fontSize: 11 }} stroke="#94a3b8" />
-              <YAxis tick={{ fontSize: 11 }} stroke="#94a3b8" />
-              <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="count"
-                stroke="#0f172a"
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
+      {/* KPI cards */}
+      <div className="row g-3 mb-3">
+        {data.kpis.map((k) => (
+          <div className="col-lg-3 col-md-4 col-sm-6" key={k.label}>
+            <div className="kpi-card" style={{ borderLeft: `3px solid ${k.accent}` }}>
+              <div className="kpi-details">
+                <h4>{k.value}</h4>
+                <p>{k.label}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
 
-        <ChartCard title="Revenue">
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={revenueByDay}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis dataKey="d" tick={{ fontSize: 11 }} stroke="#94a3b8" />
-              <YAxis tick={{ fontSize: 11 }} stroke="#94a3b8" />
-              <Tooltip formatter={(v) => money(typeof v === 'number' ? v : Number(v))} />
-              <Bar dataKey="value" fill="#10b981" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+      {/* Charts */}
+      <div className="row g-3">
+        <div className="col-lg-6">
+          <div className="chart-card">
+            <h5>User Growth</h5>
+            <ResponsiveContainer width="100%" height={260}>
+              <AreaChart data={data.lineData} margin={{ top: 10, right: 10, bottom: 30, left: -10 }}>
+                <CartesianGrid stroke="#eee" />
+                <XAxis dataKey="day" interval={tickInterval} angle={-45} textAnchor="end" tick={{ fontSize: 9, fill: '#8E8E8E' }} height={50} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#8E8E8E' }} />
+                <Tooltip />
+                <Area type="monotone" dataKey="users" stroke="#6F8FA3" fill="#6F8FA322" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="col-lg-6">
+          <div className="chart-card">
+            <h5>Revenue Trend</h5>
+            <ResponsiveContainer width="100%" height={260}>
+              <AreaChart data={data.lineData} margin={{ top: 10, right: 10, bottom: 30, left: -10 }}>
+                <CartesianGrid stroke="#eee" />
+                <XAxis dataKey="day" interval={tickInterval} angle={-45} textAnchor="end" tick={{ fontSize: 9, fill: '#8E8E8E' }} height={50} />
+                <YAxis tick={{ fontSize: 11, fill: '#8E8E8E' }} />
+                <Tooltip />
+                <Area type="monotone" dataKey="rev" stroke="#7A9B5C" fill="#7A9B5C22" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="col-lg-6">
+          <div className="chart-card">
+            <h5>Orders by Status</h5>
+            <ResponsiveContainer width="100%" height={280}>
+              <PieChart>
+                <Pie data={data.statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={62} outerRadius={100} paddingAngle={1}>
+                  {data.statusData.map((s, i) => (
+                    <Cell key={i} fill={s.color} stroke="#fff" strokeWidth={2} />
+                  ))}
+                </Pie>
+                <Legend verticalAlign="bottom" iconType="circle" />
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="col-lg-6">
+          <div className="chart-card">
+            <h5>Categories Breakdown</h5>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={data.catData} margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
+                <CartesianGrid stroke="#eee" vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#8E8E8E' }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#8E8E8E' }} />
+                <Tooltip />
+                <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                  {data.catData.map((c, i) => (
+                    <Cell key={i} fill={c.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
 
-        <ChartCard title="Top categories" className="lg:col-span-2">
-          <ResponsiveContainer width="100%" height={Math.max(180, byCategory.length * 30)}>
-            <BarChart data={byCategory} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis type="number" tick={{ fontSize: 11 }} stroke="#94a3b8" />
-              <YAxis
-                dataKey="category"
-                type="category"
-                tick={{ fontSize: 11 }}
-                stroke="#94a3b8"
-                width={110}
-              />
-              <Tooltip />
-              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+      {/* Top tables */}
+      <div className="row g-3 mt-1">
+        <div className="col-lg-6">
+          <div className="chart-card">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <h5 className="mb-0">Top Artists</h5>
+              <select
+                className="form-select filter-select"
+                style={{ width: 'auto', fontSize: '0.78rem', padding: '4px 8px' }}
+                value={artistsSort}
+                onChange={(e) => setArtistsSort(e.target.value as typeof artistsSort)}
+              >
+                <option value="earnings">By earnings</option>
+                <option value="orders">By orders</option>
+                <option value="rating">By rating</option>
+              </select>
+            </div>
+            <div className="table-responsive">
+              <table className="table custom-table" style={{ margin: 0 }}>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Artist</th>
+                    <th>{artistsSort === 'earnings' ? 'Earnings' : artistsSort === 'orders' ? 'Orders' : 'Rating'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topArtists.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="text-center text-muted py-3">
+                        No data in this range.
+                      </td>
+                    </tr>
+                  ) : (
+                    topArtists.map((a, i) => (
+                      <tr key={a.id} style={{ cursor: 'pointer' }}>
+                        <td>{i + 1}</td>
+                        <td>{a.name}</td>
+                        <td>
+                          <strong>
+                            {artistsSort === 'earnings'
+                              ? money(a.earnings)
+                              : artistsSort === 'orders'
+                                ? a.orders
+                                : a.rating
+                                  ? a.rating.toFixed(2) + ' ★'
+                                  : '—'}
+                          </strong>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div className="col-lg-6">
+          <div className="chart-card">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <h5 className="mb-0">Top Categories</h5>
+              <select
+                className="form-select filter-select"
+                style={{ width: 'auto', fontSize: '0.78rem', padding: '4px 8px' }}
+                value={catSort}
+                onChange={(e) => setCatSort(e.target.value as typeof catSort)}
+              >
+                <option value="posts">By posts</option>
+                <option value="orders">By orders</option>
+              </select>
+            </div>
+            <div className="table-responsive">
+              <table className="table custom-table" style={{ margin: 0 }}>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Category</th>
+                    <th>{catSort === 'posts' ? 'Posts' : 'Orders'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topCats.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="text-center text-muted py-3">
+                        No data in this range.
+                      </td>
+                    </tr>
+                  ) : (
+                    topCats.map((c, i) => (
+                      <tr key={c.name}>
+                        <td>{i + 1}</td>
+                        <td>{c.name}</td>
+                        <td>
+                          <strong>{c[catSort] || 0}</strong>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
-}
-
-function ChartCard({
-  title,
-  children,
-  className,
-}: {
-  title: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={'rounded-xl border border-slate-200 bg-white p-5 ' + (className ?? '')}>
-      <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-500">
-        {title}
-      </h3>
-      {children}
-    </div>
-  );
-}
-
-function buildDailyCount(rows: { createdAt: Date | null }[]) {
-  const map: Record<string, number> = {};
-  rows.forEach((r) => {
-    if (!r.createdAt) return;
-    const k = r.createdAt.toISOString().slice(0, 10);
-    map[k] = (map[k] ?? 0) + 1;
-  });
-  return Object.entries(map)
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([d, count]) => ({ d: d.slice(5), count }));
-}
-
-function buildDailySum(rows: { createdAt: Date | null; total: number }[]) {
-  const map: Record<string, number> = {};
-  rows.forEach((r) => {
-    if (!r.createdAt) return;
-    const k = r.createdAt.toISOString().slice(0, 10);
-    map[k] = (map[k] ?? 0) + (r.total ?? 0);
-  });
-  return Object.entries(map)
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([d, value]) => ({ d: d.slice(5), value }));
 }

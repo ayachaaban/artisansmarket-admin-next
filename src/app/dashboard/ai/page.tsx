@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/page-header';
 import { Button } from '@/components/ui/button';
 import { Loader2, Send, Sparkles, Trash2, User as UserIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { confirmDialog } from '@/lib/ui';
 
 type Message = { role: 'user' | 'assistant'; content: string };
 
@@ -85,8 +86,8 @@ export default function AiPage() {
     }
   }
 
-  function clear() {
-    if (!confirm('Clear chat history?')) return;
+  async function clear() {
+    if (!(await confirmDialog({ title: 'Clear chat', message: 'Clear chat history?', confirmText: 'Clear', type: 'danger', modalClass: 'confirm-modal-delete' }))) return;
     setHistory([]);
     localStorage.removeItem(STORAGE_KEY);
   }

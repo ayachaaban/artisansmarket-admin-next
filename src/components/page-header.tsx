@@ -8,12 +8,18 @@ export function PageHeader({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div className="d-flex justify-content-between align-items-end mb-3 flex-wrap" style={{ gap: 10 }}>
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        {subtitle && <p className="text-sm text-slate-500">{subtitle}</p>}
+        <h2 className="page-title mb-0">{title}</h2>
+        {subtitle && (
+          <p className="text-muted" style={{ fontSize: 12, margin: 0 }}>
+            {subtitle}
+          </p>
+        )}
       </div>
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
+      <div className="d-flex" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {children}
+      </div>
     </div>
   );
 }

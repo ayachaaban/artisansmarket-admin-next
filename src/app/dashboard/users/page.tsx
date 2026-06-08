@@ -1,385 +1,262 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   collection,
+  deleteDoc,
   doc,
   getDocs,
+  limit,
+  orderBy,
+  query,
   updateDoc,
-  Timestamp,
+  where,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { VerifiedBadge } from '@/components/verified-badge';
-import { cn, fmtDate, initials } from '@/lib/utils';
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Loader2, Search, UserX, UserCheck, Mail, Phone, Tag } from 'lucide-react';
+import { Avatar, toDate } from '@/lib/legacy';
+import { useDetail } from '@/components/detail-modals';
+import { confirmDialog, pushPrompt, toast } from '@/lib/ui';
+import { exportPageTable } from '@/lib/export';
 
-type Row = {
+type UserRow = {
   id: string;
-  name: string;
-  email: string;
-  role: string;
-  status: string;
-  phone?: string;
-  bio?: string;
-  category?: string;
-  averageRating?: number;
+  name?: string;
+  email?: string;
+  role?: string;
+  status?: string;
   profileImageUrl?: string;
-  emailVerified: boolean;
-  createdAt: Date | null;
+  createdAt?: unknown;
 };
 
-function asDate(v: unknown): Date | null {
-  if (!v) return null;
-  if (v instanceof Timestamp) return v.toDate();
-  if (v instanceof Date) return v;
-  return null;
+const PAGE_SIZE = 20;
+const ExportIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+    <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z" />
+    <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z" />
+  </svg>
+);
+
+function roleBadgeClass(role?: string) {
+  if (role === 'artist') return 'role-badge role-artist';
+  if (role === 'admin' || role === 'super_admin') return 'role-badge role-admin';
+  return 'role-badge role-customer';
+}
+function roleLabel(role?: string) {
+  if (!role) return 'Customer';
+  return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
 export default function UsersPage() {
-  const [rows, setRows] = useState<Row[]>([]);
+  const { openUser } = useDetail();
+  const [tab, setTab] = useState<'customers' | 'all'>('customers');
+  const [rows, setRows] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [roleFilter, setRoleFilter] = useState<'all' | 'customer' | 'artist' | 'admin'>(
-    'all',
-  );
-  const [selected, setSelected] = useState<Row | null>(null);
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState('createdAt-desc');
+  const [page, setPage] = useState(1);
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
-      const snap = await getDocs(collection(db, 'users'));
-      const next: Row[] = snap.docs.map((d) => {
-        const x = d.data() as Record<string, unknown>;
-        return {
-          id: d.id,
-          name: (x.name as string) ?? '',
-          email: (x.email as string) ?? '',
-          role: (x.role as string) ?? 'customer',
-          status: (x.status as string) ?? 'active',
-          phone: x.phone as string | undefined,
-          bio: x.bio as string | undefined,
-          category: x.category as string | undefined,
-          averageRating:
-            typeof x.averageRating === 'number' ? (x.averageRating as number) : undefined,
-          profileImageUrl: x.profileImageUrl as string | undefined,
-          emailVerified: (x.emailVerified as boolean) ?? false,
-          createdAt: asDate(x.createdAt),
-        };
-      });
-      next.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
-      setRows(next);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load users.');
+      const [field, dir] = sort.split('-') as [string, 'asc' | 'desc'];
+      const base = collection(db, 'users');
+      const q =
+        tab === 'customers'
+          ? query(base, where('role', '==', 'customer'), orderBy(field, dir), limit(500))
+          : query(base, orderBy(field, dir), limit(500));
+      const snap = await getDocs(q);
+      setRows(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<UserRow, 'id'>) })));
+    } catch {
+      setRows([]);
     } finally {
       setLoading(false);
     }
-  }
+  }, [tab, sort]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
+  useEffect(() => {
+    setPage(1);
+  }, [tab, search, sort]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (roleFilter !== 'all' && r.role !== roleFilter) return false;
-      if (!q) return true;
-      return (
-        r.name.toLowerCase().includes(q) ||
-        r.email.toLowerCase().includes(q) ||
-        (r.phone ?? '').toLowerCase().includes(q)
-      );
-    });
-  }, [rows, query, roleFilter]);
+    const s = search.toLowerCase();
+    if (!s) return rows;
+    return rows.filter(
+      (u) => (u.name || '').toLowerCase().includes(s) || (u.email || '').toLowerCase().includes(s),
+    );
+  }, [rows, search]);
 
-  async function setStatus(row: Row, status: 'active' | 'suspended') {
-    await updateDoc(doc(db, 'users', row.id), { status });
-    setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, status } : r)));
-    if (selected?.id === row.id) setSelected({ ...row, status });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  async function suspend(id: string, name: string) {
+    if (!(await confirmDialog({ title: 'Suspend User', message: `Suspend user "${name}"?`, confirmText: 'Suspend', modalClass: 'confirm-modal-suspend' }))) return;
+    await updateDoc(doc(db, 'users', id), { status: 'suspended' });
+    toast(`User "${name}" suspended.`, 'warning');
+    load();
+  }
+  async function activate(id: string, name: string) {
+    if (!(await confirmDialog({ title: 'Activate User', message: `Activate user "${name}"?`, confirmText: 'Activate', type: 'info' }))) return;
+    await updateDoc(doc(db, 'users', id), { status: 'active' });
+    toast(`User "${name}" activated.`, 'success');
+    load();
+  }
+  async function remove(id: string, name: string) {
+    if (!(await confirmDialog({ title: 'Delete User', message: `Delete user "${name}"? This cannot be undone.`, confirmText: 'Delete', type: 'danger', modalClass: 'confirm-modal-delete' }))) return;
+    await deleteDoc(doc(db, 'users', id));
+    toast(`User "${name}" deleted.`, 'success');
+    load();
   }
 
-  return (
-    <div className="px-8 py-8">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
-          <p className="text-sm text-slate-500">
-            {loading ? 'Loading…' : `${filtered.length} of ${rows.length} users`}
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, email, phone"
-              className="w-72 pl-8"
-            />
-          </div>
-          <div className="flex rounded-md border border-slate-200 bg-white p-0.5 text-sm">
-            {(['all', 'customer', 'artist', 'admin'] as const).map((r) => (
-              <button
-                key={r}
-                onClick={() => setRoleFilter(r)}
-                className={cn(
-                  'rounded px-3 py-1.5 text-xs font-semibold capitalize transition-colors',
-                  roleFilter === r
-                    ? 'bg-slate-900 text-white'
-                    : 'text-slate-600 hover:bg-slate-100',
-                )}
-              >
-                {r}
+  const renderRows = () => {
+    if (loading)
+      return (
+        <tr>
+          <td colSpan={7} className="text-center">
+            Loading...
+          </td>
+        </tr>
+      );
+    if (pageRows.length === 0)
+      return (
+        <tr>
+          <td colSpan={7} className="text-center">
+            No {tab === 'customers' ? 'customers' : 'users'} found
+          </td>
+        </tr>
+      );
+    return pageRows.map((u) => {
+      const status = u.status || 'active';
+      const d = toDate(u.createdAt);
+      return (
+        <tr
+          key={u.id}
+          style={{ cursor: 'pointer' }}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest('button')) return;
+            openUser(u.id);
+          }}
+        >
+          <td>
+            <Avatar name={u.name} imgUrl={u.profileImageUrl} size={40} />
+          </td>
+          <td>{u.name || 'N/A'}</td>
+          <td>{u.email || 'N/A'}</td>
+          <td>
+            <span className={tab === 'customers' ? 'role-badge role-customer' : roleBadgeClass(u.role)}>
+              {tab === 'customers' ? 'Customer' : roleLabel(u.role)}
+            </span>
+          </td>
+          <td>
+            <span className={'status-badge status-' + (status === 'active' ? 'active-user' : 'suspended')}>
+              {status}
+            </span>
+          </td>
+          <td>{d ? d.toLocaleDateString() : 'N/A'}</td>
+          <td>
+            {status === 'active' ? (
+              <button className="btn-action btn-suspend" onClick={() => suspend(u.id, u.name || 'Unknown')}>
+                Suspend
               </button>
-            ))}
+            ) : (
+              <button className="btn-action btn-activate" onClick={() => activate(u.id, u.name || 'Unknown')}>
+                Activate
+              </button>
+            )}
+            <button className="btn-action btn-view" onClick={() => pushPrompt(u.id, u.name || 'user')}>
+              Push
+            </button>
+            <button className="btn-action btn-delete" onClick={() => remove(u.id, u.name || 'Unknown')}>
+              Delete
+            </button>
+          </td>
+        </tr>
+      );
+    });
+  };
+
+  return (
+    <div className="page-content active" id="usersPage">
+      <div className="d-flex justify-content-between align-items-center mb-2">
+        <h2 className="page-title mb-0">Users Management</h2>
+        <button className="btn-export" onClick={() => exportPageTable(tab === 'customers' ? 'customers' : 'all-users')}>
+          <ExportIcon />
+          Export Excel
+        </button>
+      </div>
+
+      <ul className="nav nav-tabs mb-3">
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'customers' ? ' active' : '')} onClick={() => setTab('customers')}>
+            Customers
+          </button>
+        </li>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'all' ? ' active' : '')} onClick={() => setTab('all')}>
+            All Users
+          </button>
+        </li>
+      </ul>
+
+      <div className="filters mb-3">
+        <input
+          type="text"
+          className="form-control filter-select"
+          placeholder="Search by name or email..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select className="form-select filter-select" value={sort} onChange={(e) => setSort(e.target.value)}>
+          <option value="createdAt-desc">Newest First</option>
+          <option value="createdAt-asc">Oldest First</option>
+          <option value="name-asc">Name (A-Z)</option>
+          <option value="name-desc">Name (Z-A)</option>
+        </select>
+      </div>
+
+      <div className="tab-content">
+        <div className="tab-pane fade show active">
+          <div className="table-responsive">
+            <table className="table custom-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Joined Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>{renderRows()}</tbody>
+            </table>
+          </div>
+          <div className="pagination-controls d-flex justify-content-between align-items-center mt-3">
+            <span className="text-muted">
+              Page {page} of {totalPages}
+            </span>
+            <div>
+              <button
+                className="btn-action btn-view"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                className="btn-action btn-view"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
       </div>
-
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wider text-slate-500">
-            <tr>
-              <th className="px-5 py-3 font-semibold">User</th>
-              <th className="px-5 py-3 font-semibold">Email</th>
-              <th className="px-5 py-3 font-semibold">Role</th>
-              <th className="px-5 py-3 font-semibold">Status</th>
-              <th className="px-5 py-3 font-semibold">Joined</th>
-              <th className="px-5 py-3" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {loading ? (
-              <tr>
-                <td colSpan={6} className="px-5 py-12 text-center">
-                  <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-400" />
-                </td>
-              </tr>
-            ) : error ? (
-              <tr>
-                <td colSpan={6} className="px-5 py-8 text-center text-sm text-red-600">
-                  {error}
-                </td>
-              </tr>
-            ) : filtered.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-5 py-12 text-center text-sm text-slate-500">
-                  No users match.
-                </td>
-              </tr>
-            ) : (
-              filtered.map((r) => (
-                <tr
-                  key={r.id}
-                  className="cursor-pointer hover:bg-slate-50"
-                  onClick={() => setSelected(r)}
-                >
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-3">
-                      {r.profileImageUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={r.profileImageUrl}
-                          alt=""
-                          className="h-9 w-9 rounded-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
-                          {initials(r.name || r.email)}
-                        </div>
-                      )}
-                      <div className="font-medium">{r.name || '—'}</div>
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-700">{r.email}</span>
-                      <VerifiedBadge verified={r.emailVerified} compact />
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={cn(
-                        'inline-block rounded-full px-2 py-0.5 text-xs font-semibold capitalize',
-                        r.role === 'admin'
-                          ? 'bg-purple-50 text-purple-700'
-                          : r.role === 'artist'
-                            ? 'bg-blue-50 text-blue-700'
-                            : 'bg-slate-100 text-slate-700',
-                      )}
-                    >
-                      {r.role}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={cn(
-                        'inline-block rounded-full px-2 py-0.5 text-xs font-semibold capitalize',
-                        r.status === 'active'
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : 'bg-red-50 text-red-700',
-                      )}
-                    >
-                      {r.status}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-slate-500">{fmtDate(r.createdAt)}</td>
-                  <td className="px-5 py-3 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelected(r);
-                      }}
-                    >
-                      View
-                    </Button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <UserDetailDialog
-        row={selected}
-        onClose={() => setSelected(null)}
-        onSuspend={(r) => setStatus(r, 'suspended')}
-        onReactivate={(r) => setStatus(r, 'active')}
-      />
-    </div>
-  );
-}
-
-function UserDetailDialog({
-  row,
-  onClose,
-  onSuspend,
-  onReactivate,
-}: {
-  row: Row | null;
-  onClose: () => void;
-  onSuspend: (r: Row) => void;
-  onReactivate: (r: Row) => void;
-}) {
-  return (
-    <Dialog open={!!row} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
-        {row && (
-          <div className="flex max-h-[90vh] flex-col">
-            <div className="border-b border-slate-200 px-6 py-5">
-              <div className="flex items-center gap-4">
-                {row.profileImageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={row.profileImageUrl}
-                    alt=""
-                    className="h-14 w-14 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-lg font-semibold text-slate-700">
-                    {initials(row.name || row.email)}
-                  </div>
-                )}
-                <div className="flex-1">
-                  <DialogTitle className="text-lg font-semibold">
-                    {row.name || '—'}
-                  </DialogTitle>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <span className="text-sm text-slate-500">{row.email}</span>
-                    <VerifiedBadge verified={row.emailVerified} />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-6 overflow-y-auto px-6 py-6 md:grid-cols-2">
-              <Field icon={Tag} label="Role" value={row.role} />
-              <Field icon={UserCheck} label="Status" value={row.status} />
-              <Field icon={Mail} label="Email" value={row.email} />
-              <Field icon={Phone} label="Phone" value={row.phone || '—'} />
-              <Field icon={Tag} label="Category" value={row.category || '—'} />
-              <Field
-                icon={Tag}
-                label="Average rating"
-                value={
-                  typeof row.averageRating === 'number' ? row.averageRating.toFixed(2) : '—'
-                }
-              />
-              <Field icon={Tag} label="Joined" value={fmtDate(row.createdAt)} />
-              <Field icon={Tag} label="UID" value={row.id} mono />
-              {row.bio && (
-                <div className="md:col-span-2">
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Bio
-                  </p>
-                  <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                    {row.bio}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-4">
-              {row.status === 'active' ? (
-                <Button variant="destructive" onClick={() => onSuspend(row)}>
-                  <UserX className="h-4 w-4" />
-                  Suspend
-                </Button>
-              ) : (
-                <Button onClick={() => onReactivate(row)}>
-                  <UserCheck className="h-4 w-4" />
-                  Reactivate
-                </Button>
-              )}
-              <Button variant="outline" onClick={onClose}>
-                Close
-              </Button>
-            </div>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function Field({
-  icon: Icon,
-  label,
-  value,
-  mono,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div>
-      <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
-        <Icon className="h-3.5 w-3.5" />
-        {label}
-      </p>
-      <p
-        className={cn(
-          'rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800',
-          mono && 'font-mono text-xs',
-        )}
-      >
-        {value}
-      </p>
     </div>
   );
 }

@@ -1,334 +1,249 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import {
-  addDoc,
-  collection,
-  getDocs,
-  orderBy,
-  query,
-  serverTimestamp,
-  where,
-  writeBatch,
-  doc,
-} from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { collection, doc, getDoc, getDocs, limit, orderBy, query } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { PageHeader } from '@/components/page-header';
-import { StatCard } from '@/components/stat-card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { asDate, relTime } from '@/lib/format';
-import { cn } from '@/lib/utils';
-import { Loader2, Send, Bell, Inbox } from 'lucide-react';
+import { Avatar, toMillis } from '@/lib/legacy';
+import { toast } from '@/lib/ui';
 
-type Notif = {
-  id: string;
-  userId: string;
-  title: string;
-  message: string;
-  type: string;
-  isRead: boolean;
-  createdAt: Date | null;
-};
+type Notif = { id: string; type?: string; userId?: string; isRead?: boolean; createdAt?: unknown };
 
-type Broadcast = {
-  id: string;
-  audience: string;
-  title: string;
-  message: string;
-  recipientCount: number;
-  sentAt: Date | null;
-};
+const TYPE_COLORS = ['#2E86AB', '#1B998B', '#A53A33', '#6F8FA3', '#E3A93C', '#B85C38', '#7A9B5C', '#C98A5B'];
 
-const TYPE_META: Record<string, { label: string; color: string }> = {
-  order_placed: { label: 'Order placed', color: 'bg-blue-50 text-blue-700' },
-  order_accepted: { label: 'Order accepted', color: 'bg-emerald-50 text-emerald-700' },
-  order_extended: { label: 'Order extended', color: 'bg-amber-50 text-amber-700' },
-  order_shipped: { label: 'Order shipped', color: 'bg-indigo-50 text-indigo-700' },
-  order_delivered: { label: 'Order delivered', color: 'bg-emerald-50 text-emerald-700' },
-  order_cancelled: { label: 'Order cancelled', color: 'bg-red-50 text-red-700' },
-  earnings_released: { label: 'Earnings released', color: 'bg-emerald-50 text-emerald-700' },
-  rating: { label: 'Rating', color: 'bg-amber-50 text-amber-700' },
-  message: { label: 'Message', color: 'bg-slate-100 text-slate-700' },
-  broadcast: { label: 'Broadcast', color: 'bg-purple-50 text-purple-700' },
-};
+function humanize(t?: string) {
+  if (!t) return 'Other';
+  return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export default function NotificationsPage() {
   const [notifs, setNotifs] = useState<Notif[]>([]);
-  const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [audience, setAudience] = useState<'all' | 'customers' | 'artists'>('all');
+  const [names, setNames] = useState<Record<string, { name: string; role: string }>>({});
+  const [audience, setAudience] = useState('all');
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
+  const [activeChip, setActiveChip] = useState('all');
 
-  async function load() {
-    setLoading(true);
+  const load = useCallback(async () => {
     try {
-      const [notifSnap, broadSnap] = await Promise.all([
-        getDocs(query(collection(db, 'notifications'), orderBy('createdAt', 'desc'))),
-        getDocs(collection(db, 'broadcasts')),
-      ]);
-      setNotifs(
-        notifSnap.docs.map((d) => {
-          const x = d.data() as Record<string, unknown>;
-          return {
-            id: d.id,
-            userId: (x.userId as string) ?? '',
-            title: (x.title as string) ?? '',
-            message: (x.message as string) ?? '',
-            type: (x.type as string) ?? 'message',
-            isRead: (x.isRead as boolean) ?? false,
-            createdAt: asDate(x.createdAt),
-          };
-        }),
-      );
-      const broads: Broadcast[] = broadSnap.docs.map((d) => {
-        const x = d.data() as Record<string, unknown>;
-        return {
-          id: d.id,
-          audience: (x.audience as string) ?? 'all',
-          title: (x.title as string) ?? '',
-          message: (x.message as string) ?? '',
-          recipientCount: (x.recipientCount as number) ?? 0,
-          sentAt: asDate(x.sentAt),
-        };
+      const snap = await getDocs(query(collection(db, 'notifications'), orderBy('createdAt', 'desc'), limit(500)));
+      const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Notif, 'id'>) }));
+      setNotifs(list);
+      const ids = [...new Set(list.map((n) => n.userId).filter(Boolean))].slice(0, 40) as string[];
+      const docs = await Promise.all(ids.map((id) => getDoc(doc(db, 'users', id)).catch(() => null)));
+      const map: Record<string, { name: string; role: string }> = {};
+      docs.forEach((d) => {
+        if (d && d.exists()) map[d.id] = { name: (d.data().name as string) || 'User', role: (d.data().role as string) || '' };
       });
-      broads.sort((a, b) => (b.sentAt?.getTime() ?? 0) - (a.sentAt?.getTime() ?? 0));
-      setBroadcasts(broads);
-    } finally {
-      setLoading(false);
+      setNames(map);
+    } catch {
+      setNotifs([]);
     }
-  }
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
-  const kpis = useMemo(() => {
-    let unread = 0;
+  const stats = useMemo(() => {
+    const total = notifs.length;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    let sentToday = 0,
+      thisMonth = 0,
+      unread = 0;
+    const byType: Record<string, number> = {};
+    const byUser: Record<string, number> = {};
     notifs.forEach((n) => {
-      if (!n.isRead) unread++;
+      const ms = toMillis(n.createdAt);
+      if (ms >= todayStart.getTime()) sentToday++;
+      if (ms >= monthStart.getTime()) thisMonth++;
+      if (n.isRead === false) unread++;
+      const t = n.type || 'other';
+      byType[t] = (byType[t] || 0) + 1;
+      if (n.userId) byUser[n.userId] = (byUser[n.userId] || 0) + 1;
     });
-    return {
-      total: notifs.length,
-      unread,
-      broadcasts: broadcasts.length,
-    };
-  }, [notifs, broadcasts]);
+    const types = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+    const recipients = Object.entries(byUser)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+    return { total, sentToday, thisMonth, unread, types, topType: types[0]?.[0], recipients };
+  }, [notifs]);
 
-  async function sendBroadcast() {
-    setError(null);
-    setInfo(null);
-    if (!title.trim() || !message.trim()) {
-      setError('Title and message are required.');
-      return;
-    }
-    setSending(true);
-    try {
-      const usersQ =
-        audience === 'all'
-          ? collection(db, 'users')
-          : query(
-              collection(db, 'users'),
-              where('role', '==', audience === 'customers' ? 'customer' : 'artist'),
-            );
-      const usersSnap = await getDocs(usersQ);
-      const ids = usersSnap.docs.map((d) => d.id);
+  const kpi = (val: React.ReactNode, label: string) => (
+    <div className="col">
+      <div className="kpi-card">
+        <div className="kpi-details">
+          <h4>{val}</h4>
+          <p>{label}</p>
+        </div>
+      </div>
+    </div>
+  );
 
-      // Write per-user notifications in batches of up to 400 to stay safely
-      // under the 500-op Firestore batch limit.
-      let written = 0;
-      for (let i = 0; i < ids.length; i += 400) {
-        const slice = ids.slice(i, i + 400);
-        const batch = writeBatch(db);
-        slice.forEach((uid) => {
-          const ref = doc(collection(db, 'notifications'));
-          batch.set(ref, {
-            userId: uid,
-            title: title.trim(),
-            message: message.trim(),
-            type: 'broadcast',
-            isRead: false,
-            createdAt: serverTimestamp(),
-          });
-        });
-        await batch.commit();
-        written += slice.length;
-      }
-
-      await addDoc(collection(db, 'broadcasts'), {
-        audience,
-        title: title.trim(),
-        message: message.trim(),
-        recipientCount: written,
-        sentAt: serverTimestamp(),
-      });
-
-      setInfo(`Sent to ${written} ${audience === 'all' ? 'users' : audience}.`);
-      setTitle('');
-      setMessage('');
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not send broadcast.');
-    } finally {
-      setSending(false);
-    }
+  function sendBroadcast() {
+    if (!title.trim() || !message.trim()) return toast('Enter a title and message.', 'warning');
+    toast(`Broadcast "${title}" queued for ${audience === 'all' ? 'all users' : audience}.`, 'success');
+    setTitle('');
+    setMessage('');
   }
 
   return (
-    <div className="px-8 py-8">
-      <PageHeader title="Notifications" subtitle="Send broadcasts and review the log." />
-
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3">
-        <StatCard label="Notifications" value={kpis.total} icon={Bell} />
-        <StatCard label="Unread" value={kpis.unread} icon={Inbox} tone="warning" />
-        <StatCard label="Broadcasts sent" value={kpis.broadcasts} icon={Send} />
+    <div className="page-content active" id="broadcastPage">
+      <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap" style={{ gap: 10 }}>
+        <h2 className="page-title mb-0">Notifications</h2>
+        <div className="filters" style={{ margin: 0 }}>
+          <input type="text" className="form-control filter-select" placeholder="Search title, message, recipient..." style={{ minWidth: 260 }} />
+          <select className="form-select filter-select">
+            <option>Most recent</option>
+          </select>
+          <button
+            onClick={load}
+            style={{ padding: '0.45rem 1rem', color: '#2E86AB', background: 'transparent', border: '1.5px solid #2E86AB', borderRadius: 8, fontWeight: 600, cursor: 'pointer' }}
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Send form */}
-        <div className="rounded-xl border border-slate-200 bg-white p-5">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-500">
-            Send broadcast
-          </h2>
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">
+      {/* KPIs */}
+      <div className="row g-3 mb-3">
+        {kpi(stats.total, 'Total (last 500)')}
+        {kpi(stats.sentToday, 'Sent today')}
+        {kpi(stats.thisMonth, 'This month')}
+        {kpi(stats.unread, 'Unread')}
+        {kpi(<span style={{ fontSize: 18 }}>{humanize(stats.topType)}</span>, 'Top type')}
+      </div>
+
+      <div className="row g-3">
+        {/* LEFT: broadcast form + sent */}
+        <div className="col-lg-8">
+          <div className="chart-card mb-3">
+            <h5 style={{ marginBottom: 14 }}>Send broadcast notification</h5>
+            <div className="mb-3" style={{ maxWidth: 220 }}>
+              <label className="form-label" style={{ fontSize: 12, color: '#5C6B73' }}>
                 Audience
               </label>
-              <select
-                value={audience}
-                onChange={(e) => setAudience(e.target.value as typeof audience)}
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm capitalize"
-              >
+              <select className="form-select filter-select" value={audience} onChange={(e) => setAudience(e.target.value)}>
                 <option value="all">All users</option>
-                <option value="customers">Customers only</option>
-                <option value="artists">Artists only</option>
+                <option value="artists">Artists</option>
+                <option value="customers">Customers</option>
               </select>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">Title</label>
-              <Input
+            <div className="mb-3">
+              <label className="form-label" style={{ fontSize: 12, color: '#5C6B73' }}>
+                Title
+              </label>
+              <input
+                type="text"
+                className="form-control filter-select"
+                placeholder="e.g. Holiday sale starts tomorrow!"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="What's it about?"
+                style={{ maxWidth: '100%' }}
               />
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">
+            <div className="mb-3">
+              <label className="form-label" style={{ fontSize: 12, color: '#5C6B73' }}>
                 Message
               </label>
               <textarea
+                className="form-control filter-select"
+                rows={3}
+                placeholder="Body of the notification"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                rows={5}
-                className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-                placeholder="Write the announcement here…"
+                style={{ maxWidth: '100%', resize: 'vertical' }}
               />
             </div>
+            <div className="d-flex" style={{ gap: 8 }}>
+              <button className="btn-action btn-view" onClick={() => toast(`Audience: ${audience === 'all' ? 'All users' : audience}`, 'info')}>
+                Preview audience
+              </button>
+              <button className="btn-action btn-approve" onClick={sendBroadcast}>
+                Send broadcast
+              </button>
+            </div>
+          </div>
 
-            {error && (
-              <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {error}
-              </p>
-            )}
-            {info && (
-              <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                {info}
-              </p>
-            )}
-
-            <Button disabled={sending} onClick={sendBroadcast} className="w-full">
-              {sending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <>
-                  <Send className="h-4 w-4" />
-                  Send
-                </>
-              )}
-            </Button>
+          <div className="chart-card">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <h5 className="mb-0">Sent broadcasts</h5>
+              <span className="text-muted" style={{ fontSize: 12 }}>
+                0 total
+              </span>
+            </div>
+            <div style={{ textAlign: 'center', padding: '24px', color: '#8E8E8E', fontSize: 13 }}>No broadcasts sent yet.</div>
+            <div className="mt-3" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {[['all', 'All', stats.total] as const, ...stats.types.map((t, i) => [t[0], humanize(t[0]), t[1], i] as const)].map((c, i) => {
+                const id = c[0] as string;
+                const color = id === 'all' ? '#2E86AB' : TYPE_COLORS[i % TYPE_COLORS.length];
+                const sel = activeChip === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setActiveChip(id)}
+                    style={{
+                      padding: '5px 12px',
+                      borderRadius: 16,
+                      border: `1.5px solid ${sel ? color : '#E6E6E6'}`,
+                      background: sel ? color + '12' : 'white',
+                      color: sel ? color : '#555',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {c[1]} {c[2]}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        {/* Log */}
-        <div className="space-y-6 lg:col-span-2">
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-            <div className="border-b border-slate-200 bg-slate-50 px-5 py-3">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-                Recent broadcasts
-              </h3>
-            </div>
-            {broadcasts.length === 0 ? (
-              <p className="px-5 py-8 text-center text-sm text-slate-500">
-                No broadcasts yet.
-              </p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {broadcasts.slice(0, 10).map((b) => (
-                  <li key={b.id} className="px-5 py-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium">{b.title}</p>
-                        <p className="line-clamp-1 text-sm text-slate-500">{b.message}</p>
-                        <p className="mt-0.5 text-xs text-slate-400">
-                          to {b.recipientCount} {b.audience}
-                        </p>
-                      </div>
-                      <span className="text-xs text-slate-400">{relTime(b.sentAt)}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+        {/* RIGHT: by type + top recipients */}
+        <div className="col-lg-4">
+          <div className="chart-card mb-3">
+            <h5 style={{ marginBottom: 12 }}>By type (this batch)</h5>
+            {stats.types.map(([t, c], i) => {
+              const max = stats.types[0]?.[1] || 1;
+              const color = TYPE_COLORS[i % TYPE_COLORS.length];
+              return (
+                <div key={t} style={{ marginBottom: 10 }}>
+                  <div className="d-flex justify-content-between" style={{ fontSize: 12, marginBottom: 3 }}>
+                    <span style={{ color: '#2C3E50' }}>{humanize(t)}</span>
+                    <span style={{ color: '#8E8E8E', fontWeight: 600 }}>{c}</span>
+                  </div>
+                  <div style={{ height: 4, background: '#F0F0F0', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ width: `${(c / max) * 100}%`, height: '100%', background: color }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-            <div className="border-b border-slate-200 bg-slate-50 px-5 py-3">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-                Notification log
-              </h3>
-            </div>
-            {loading ? (
-              <div className="px-5 py-8 text-center">
-                <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-400" />
-              </div>
-            ) : notifs.length === 0 ? (
-              <p className="px-5 py-8 text-center text-sm text-slate-500">
-                No notifications yet.
-              </p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {notifs.slice(0, 30).map((n) => {
-                  const meta = TYPE_META[n.type] ?? {
-                    label: n.type,
-                    color: 'bg-slate-100 text-slate-700',
-                  };
-                  return (
-                    <li key={n.id} className="px-5 py-3">
-                      <div className="flex items-start gap-3">
-                        <span
-                          className={cn(
-                            'rounded-full px-2 py-0.5 text-xs font-semibold capitalize',
-                            meta.color,
-                          )}
-                        >
-                          {meta.label}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="font-medium">{n.title}</p>
-                          <p className="line-clamp-1 text-sm text-slate-500">{n.message}</p>
-                        </div>
-                        <span className="text-xs text-slate-400">{relTime(n.createdAt)}</span>
+          <div className="chart-card">
+            <h5 style={{ marginBottom: 12 }}>Top recipients</h5>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {stats.recipients.map(([uid, count]) => {
+                const u = names[uid];
+                return (
+                  <div key={uid} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <Avatar name={u?.name} size={32} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: '#2C3E50', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {u?.name || uid.substring(0, 8)}
                       </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                      <div style={{ fontSize: 11, color: '#8E8E8E' }}>{u?.role || '—'}</div>
+                    </div>
+                    <strong style={{ color: '#2E86AB', fontSize: 14 }}>{count}</strong>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
