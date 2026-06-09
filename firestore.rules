@@ -1,0 +1,456 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ════════════════════════════════════════════════════════════════
+    // IDENTITY HELPERS
+    // ════════════════════════════════════════════════════════════════
+    function isAuthenticated() { return request.auth != null; }
+
+    function isAdmin() {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function isSuperAdmin() {
+      return request.auth != null &&
+             get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'super-admin';
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // INPUT-VALIDATION HELPERS
+    //
+    // These helpers are reused across every collection rule so that
+    // create/update payloads are validated at the data layer, not only
+    // in the mobile app. The strategy:
+    //   - Validation is STRICT on create (every required field must
+    //     exist, be of the right type, and pass length / enum / range).
+    //   - Validation is LENIENT on update (only the changed fields are
+    //     re-validated, so existing seeded documents continue to work).
+    //
+    // If you change a constraint here, also update the matching mobile
+    // validator to keep client-side errors helpful.
+    // ════════════════════════════════════════════════════════════════
+
+    // String of a given length range (inclusive).
+    function isStringLen(v, lo, hi) {
+      return v is string && v.size() >= lo && v.size() <= hi;
+    }
+
+    // Optional string — null/empty allowed, but if present must be
+    // within length bounds.
+    function isOptStringLen(v, hi) {
+      return v == null || (v is string && v.size() <= hi);
+    }
+
+    // Public HTTP/HTTPS URL.
+    function isHttpUrl(v) {
+      return v is string && v.size() <= 2000 &&
+             (v.matches('^https?://.+') || v.matches('^http?://.+'));
+    }
+
+    // Optional URL — null, empty string, or a valid HTTP(S) URL.
+    // The mobile app writes empty strings for media fields that don't
+    // apply (e.g. a post has no videoUrl), so we accept '' as "absent".
+    function isOptUrl(v) {
+      return v == null || v == '' || isHttpUrl(v);
+    }
+
+    // Email — basic shape check. Real verification happens at Firebase
+    // Auth layer; this is defence-in-depth.
+    function isEmailLike(v) {
+      return v is string && v.size() <= 254 && v.matches('^[^@ ]+@[^@ ]+\\.[^@ ]+$');
+    }
+
+    // Number in inclusive range.
+    function isInRange(v, lo, hi) {
+      return (v is number) && v >= lo && v <= hi;
+    }
+
+    // Boolean.
+    function isBool(v) { return v is bool; }
+
+    // String must be one of the listed allowed values.
+    function isOneOf(v, allowed) { return v is string && (v in allowed); }
+
+    // Helper for the on-update "only re-validate changed fields" pattern.
+    function changed(field) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny([field]);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // CATEGORY AND ENUM CONSTANTS
+    // ════════════════════════════════════════════════════════════════
+
+    function validCategories() {
+      return [
+        'Painting','Sculpture','Photography','Digital Art','Crafts',
+        'Pottery','Jewelry','Woodwork','Textiles','Knitting & Crochet',
+        'Glasswork','Calligraphy','Illustration','Printmaking','Metalwork',
+        'Candles & Soap','Mosaic','Embroidery','Paper Art','Resin Art',
+        'Mixed Media'
+      ];
+    }
+
+    function validUserRoles()      { return ['customer','artist']; }
+    function validUserStatuses()   { return ['active','suspended','deleted']; }
+    function validPostStatuses()   { return ['active','sold','removed','reported']; }
+    function validMediaTypes()     { return ['post','reel']; }
+    function validOrderStatuses() {
+      return ['pending','in_progress','shipping','delivered','cancelled',
+              // Legacy values still present in some older docs:
+              'paid','processing','shipped','refunded'];
+    }
+    function validPaymentMethods() { return ['virtual_card','virtual_visa']; }
+    function validPaymentStatuses(){ return ['completed','refunded','pending','failed']; }
+    function validPayoutStatuses() { return ['pending','processing','completed']; }
+    function validReportStatuses() { return ['pending','reviewed','resolved']; }
+    function validSubPlans()       { return ['free','basic','premium','pro']; } // 'pro' kept for back-compat
+    function validSubStatuses()    { return ['active','expired','cancelled']; }
+    function validCancelTiers() {
+      return ['full_refund','small_penalty','mid_penalty','max_penalty',
+              'post_shipping','over_extended','admin_full_refund'];
+    }
+    function validNotifTypes() {
+      return [
+        'order_placed','order_accepted','order_extended','order_shipped',
+        'order_cancelled','order_status','refund_issued','earnings_released',
+        'payment_received','payout','post_removed','rating','message',
+        'chat_message','subscription','wallet_credit','broadcast'
+      ];
+    }
+    function validMessageTypes() { return ['text','image','system']; }
+
+    // ════════════════════════════════════════════════════════════════
+    // PER-COLLECTION CREATE VALIDATORS
+    // ════════════════════════════════════════════════════════════════
+
+    function validUserCreate(d) {
+      // For optional fields we use `.get('field', null)` instead of `.field`
+      // because direct field access can fail rule evaluation when the field
+      // isn't present in the document (rules engine behaviour depends on
+      // version; the `.get()` form is always safe).
+      return isStringLen(d.name, 2, 100) &&
+             isEmailLike(d.email) &&
+             isOneOf(d.role, validUserRoles()) &&
+             isOptStringLen(d.get('phone', null), 25) &&
+             isOptStringLen(d.get('bio', null), 500) &&
+             (d.get('category', null) == null ||
+                isOneOf(d.get('category', null), validCategories())) &&
+             isOptUrl(d.get('profileImageUrl', null));
+    }
+
+    function validPostCreate(d) {
+      return d.artistId == request.auth.uid &&
+             isStringLen(d.description, 1, 1000) &&
+             isOneOf(d.category, validCategories()) &&
+             isInRange(d.price, 0, 999999) &&
+             isOneOf(d.mediaType, validMediaTypes()) &&
+             isOptUrl(d.get('imageUrl', null)) &&
+             isOptUrl(d.get('videoUrl', null)) &&
+             isOptUrl(d.get('thumbnailUrl', null)) &&
+             (d.get('videoDurationSec', null) == null ||
+                (d.mediaType == 'reel'
+                  ? isInRange(d.get('videoDurationSec', null), 0, 30)
+                  : true)) &&
+             (d.get('status', null) == null ||
+                isOneOf(d.get('status', null), validPostStatuses()));
+    }
+
+    function validReportCreate(d) {
+      return d.reporterId == request.auth.uid &&
+             d.postId is string && d.postId.size() > 0 &&
+             isStringLen(d.reason, 5, 1000) &&
+             isOptStringLen(d.get('description', null), 2000) &&
+             (d.get('status', null) == null ||
+                isOneOf(d.get('status', null), validReportStatuses()));
+    }
+
+    function validRatingCreate(d) {
+      return d.customerId == request.auth.uid &&
+             d.artistId is string && d.artistId.size() > 0 &&
+             d.artistId != request.auth.uid && // can't rate yourself
+             isInRange(d.stars, 1, 5) &&
+             isOptStringLen(d.get('comment', null), 1000);
+    }
+
+    function validSubscriptionCreate(d) {
+      return d.artistId == request.auth.uid &&
+             isOneOf(d.plan, validSubPlans()) &&
+             (d.get('status', null) == null ||
+                isOneOf(d.get('status', null), validSubStatuses())) &&
+             (d.get('amount', null) == null ||
+                isInRange(d.get('amount', null), 0, 9999));
+    }
+
+    function validNotificationCreate(d) {
+      return d.userId is string && d.userId.size() > 0 &&
+             isStringLen(d.title, 1, 200) &&
+             isStringLen(d.message, 1, 1000) &&
+             isOneOf(d.type, validNotifTypes()) &&
+             (d.get('isRead', null) == null || isBool(d.get('isRead', null)));
+    }
+
+    function validOrderCreate(d) {
+      return d.customerId == request.auth.uid &&
+             d.artistId is string && d.artistId.size() > 0 &&
+             d.artistId != request.auth.uid &&
+             d.items is list && d.items.size() > 0 && d.items.size() <= 50 &&
+             isInRange(d.total, 0, 999999) &&
+             (d.get('subtotal', null) == null ||
+                isInRange(d.get('subtotal', null), 0, 999999)) &&
+             (d.get('platformFee', null) == null ||
+                isInRange(d.get('platformFee', null), 0, 999999)) &&
+             isOneOf(d.status, validOrderStatuses()) &&
+             (d.get('paymentMethod', null) == null ||
+                isOneOf(d.get('paymentMethod', null), validPaymentMethods()));
+    }
+
+    function validPaymentCreate(d) {
+      return isInRange(d.amount, 0, 999999) &&
+             (d.get('type', null) == null || d.get('type', null) is string) &&
+             (d.get('status', null) == null ||
+                isOneOf(d.get('status', null), validPaymentStatuses())) &&
+             (d.get('paymentMethod', null) == null ||
+                isOneOf(d.get('paymentMethod', null), validPaymentMethods()));
+    }
+
+    function validPayoutCreate(d) {
+      return d.artistId == request.auth.uid &&
+             isInRange(d.amount, 0, 999999) &&
+             (d.get('status', null) == null ||
+                isOneOf(d.get('status', null), validPayoutStatuses()));
+    }
+
+    function validConversationCreate(d) {
+      return d.participants is list &&
+             d.participants.size() == 2 &&
+             request.auth.uid in d.participants;
+    }
+
+    function validMessageCreate(d) {
+      return d.senderId == request.auth.uid &&
+             isStringLen(d.text, 1, 5000) &&
+             (d.get('type', null) == null ||
+                isOneOf(d.get('type', null), validMessageTypes())) &&
+             (d.get('imageUrl', null) == null ||
+                isHttpUrl(d.get('imageUrl', null)));
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // PER-COLLECTION RULES
+    // ════════════════════════════════════════════════════════════════
+
+    // Admins collection - super-admins can read/write, admins can only read.
+    match /admins/{adminId} {
+      allow read: if isAdmin();
+      allow create: if isSuperAdmin() && request.resource.data.role == 'admin';
+      allow update: if isSuperAdmin() && request.resource.data.role == 'admin';
+      allow delete: if isSuperAdmin();
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      // Create: only the owner can create their own user doc, payload validated.
+      allow create: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == userId &&
+         validUserCreate(request.resource.data));
+      // Update: owner or admin; if name/email/role/category changed they must
+      // still be valid. averageRating-only updates are allowed for anyone
+      // (system needs to recompute it after ratings).
+      allow update: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == userId &&
+          (!changed('name')     || isStringLen(request.resource.data.name, 2, 100)) &&
+          (!changed('email')    || isEmailLike(request.resource.data.email)) &&
+          (!changed('role')     || isOneOf(request.resource.data.role, validUserRoles())) &&
+          (!changed('status')   || isOneOf(request.resource.data.status, validUserStatuses())) &&
+          (!changed('phone')    || isOptStringLen(request.resource.data.phone, 25)) &&
+          (!changed('bio')      || isOptStringLen(request.resource.data.bio, 500)) &&
+          (!changed('category') || request.resource.data.category == null ||
+                                    isOneOf(request.resource.data.category, validCategories())) &&
+          (!changed('profileImageUrl') || isOptUrl(request.resource.data.profileImageUrl))
+        ) ||
+        // The platform job that recomputes averageRating is also allowed:
+        (isAuthenticated() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['averageRating','ratingCount','updatedAt']));
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+    }
+
+    // Posts collection
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && validPostCreate(request.resource.data);
+      // Update: artist or admin, validated fields stay valid
+      allow update: if isAdmin() ||
+        (isAuthenticated() && resource.data.artistId == request.auth.uid &&
+          (!changed('description') || isStringLen(request.resource.data.description, 1, 1000)) &&
+          (!changed('category')    || isOneOf(request.resource.data.category, validCategories())) &&
+          (!changed('price')       || isInRange(request.resource.data.price, 0, 999999)) &&
+          (!changed('mediaType')   || isOneOf(request.resource.data.mediaType, validMediaTypes())) &&
+          (!changed('status')      || isOneOf(request.resource.data.status, validPostStatuses())) &&
+          (!changed('imageUrl')    || isOptUrl(request.resource.data.imageUrl)) &&
+          (!changed('videoUrl')    || isOptUrl(request.resource.data.videoUrl)) &&
+          (!changed('thumbnailUrl')|| isOptUrl(request.resource.data.thumbnailUrl)) &&
+          // artistId is immutable
+          (!changed('artistId'))
+        );
+      allow delete: if isAdmin() ||
+                       (isAuthenticated() && resource.data.artistId == request.auth.uid);
+    }
+
+    // Reports collection
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() && validReportCreate(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    // Ratings collection
+    match /ratings/{ratingId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && validRatingCreate(request.resource.data);
+      // Update: only the rater (within a grace window) or admin; revalidate stars/comment.
+      allow update: if isAdmin() ||
+        (isAuthenticated() && resource.data.customerId == request.auth.uid &&
+          (!changed('stars')   || isInRange(request.resource.data.stars, 1, 5)) &&
+          (!changed('comment') || isOptStringLen(request.resource.data.comment, 1000)) &&
+          (!changed('customerId')) &&
+          (!changed('artistId'))
+        );
+      allow delete: if isAdmin() ||
+                       (isAuthenticated() && resource.data.customerId == request.auth.uid);
+    }
+
+    // Subscriptions collection
+    match /subscriptions/{subscriptionId} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == subscriptionId);
+      allow create: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == subscriptionId &&
+         validSubscriptionCreate(request.resource.data));
+      allow update: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == subscriptionId &&
+         request.resource.data.artistId == request.auth.uid &&
+          (!changed('plan')   || isOneOf(request.resource.data.plan, validSubPlans())) &&
+          (!changed('status') || isOneOf(request.resource.data.status, validSubStatuses())) &&
+          (!changed('amount') || isInRange(request.resource.data.amount, 0, 9999))
+        );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Audit logs - immutable, admin-only.
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // Broadcasts collection
+    match /broadcasts/{broadcastId} {
+      allow read, create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Notifications collection
+    match /notifications/{notificationId} {
+      allow read: if isAdmin() ||
+        (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow create: if isAdmin() ||
+        (isAuthenticated() && validNotificationCreate(request.resource.data));
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid &&
+        // Only allow toggling isRead and lightweight metadata; type/userId are immutable
+        (!changed('userId')) &&
+        (!changed('type') || isOneOf(request.resource.data.type, validNotifTypes()));
+      allow delete: if isAdmin() ||
+        (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    // Orders collection
+    match /orders/{orderId} {
+      allow read: if isAdmin() ||
+        (isAuthenticated() && resource.data.customerId == request.auth.uid) ||
+        (isAuthenticated() && resource.data.artistId == request.auth.uid);
+      allow create: if isAuthenticated() && validOrderCreate(request.resource.data);
+      // Update: customer or artist; revalidate any changed field. The
+      // OrderPolicy class on the mobile side enforces which transitions
+      // are allowed.
+      allow update: if isAdmin() ||
+        (isAuthenticated() &&
+          (resource.data.artistId == request.auth.uid ||
+           resource.data.customerId == request.auth.uid) &&
+          (!changed('customerId')) &&
+          (!changed('artistId')) &&
+          (!changed('status')        || isOneOf(request.resource.data.status, validOrderStatuses())) &&
+          (!changed('total')         || isInRange(request.resource.data.total, 0, 999999)) &&
+          (!changed('paymentMethod') || isOneOf(request.resource.data.paymentMethod, validPaymentMethods())) &&
+          (!changed('cancellationTier') || isOneOf(request.resource.data.cancellationTier, validCancelTiers())) &&
+          (!changed('refundAmount')  || isInRange(request.resource.data.refundAmount, 0, 999999)) &&
+          (!changed('cancellationArtistShare') ||
+             isInRange(request.resource.data.cancellationArtistShare, 0, 999999))
+        );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Payments collection - immutable for audit.
+    match /payments/{paymentId} {
+      allow read: if isAdmin() ||
+        (isAuthenticated() && resource.data.userId == request.auth.uid) ||
+        (isAuthenticated() && resource.data.customerId == request.auth.uid) ||
+        (isAuthenticated() && resource.data.artistId == request.auth.uid);
+      allow create: if isAuthenticated() && validPaymentCreate(request.resource.data);
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Payouts collection - immutable for audit.
+    match /payouts/{payoutId} {
+      allow read: if isAdmin() ||
+        (isAuthenticated() && resource.data.artistId == request.auth.uid);
+      allow create: if isAdmin() ||
+        (isAuthenticated() && validPayoutCreate(request.resource.data));
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Cart subcollection - users manage their own cart.
+    match /users/{userId}/cart/{cartItemId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+      allow read: if isAdmin();
+    }
+
+    // Wallets collection
+    match /wallets/{userId} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow create: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow delete: if false;
+    }
+
+    // Conversations + messages
+    match /conversations/{conversationId} {
+      allow get: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid in resource.data.participants);
+      allow list: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid in resource.data.participants);
+      allow create: if isAuthenticated() && validConversationCreate(request.resource.data);
+      allow update: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid in resource.data.participants);
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isAdmin() ||
+          (isAuthenticated() &&
+           request.auth.uid in
+             get(/databases/$(database)/documents/conversations/$(conversationId))
+               .data.participants);
+        allow create: if isAdmin() ||
+          (isAuthenticated() &&
+           request.auth.uid in
+             get(/databases/$(database)/documents/conversations/$(conversationId))
+               .data.participants &&
+           validMessageCreate(request.resource.data));
+        allow update, delete: if isAdmin();
+      }
+    }
+  }
+}

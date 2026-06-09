@@ -17,6 +17,7 @@ import { Avatar, toDate } from '@/lib/legacy';
 import { useDetail } from '@/components/detail-modals';
 import { confirmDialog, pushPrompt, toast } from '@/lib/ui';
 import { exportPageTable } from '@/lib/export';
+import { VerifiedPill } from '@/components/verified-pill';
 
 type UserRow = {
   id: string;
@@ -25,6 +26,7 @@ type UserRow = {
   role?: string;
   status?: string;
   profileImageUrl?: string;
+  emailVerified?: boolean;
   createdAt?: unknown;
 };
 
@@ -143,7 +145,12 @@ export default function UsersPage() {
             <Avatar name={u.name} imgUrl={u.profileImageUrl} size={40} />
           </td>
           <td>{u.name || 'N/A'}</td>
-          <td>{u.email || 'N/A'}</td>
+          <td>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              {u.email || 'N/A'}
+              <VerifiedPill verified={u.emailVerified === true} />
+            </span>
+          </td>
           <td>
             <span className={tab === 'customers' ? 'role-badge role-customer' : roleBadgeClass(u.role)}>
               {tab === 'customers' ? 'Customer' : roleLabel(u.role)}

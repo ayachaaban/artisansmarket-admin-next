@@ -553,6 +553,7 @@ function PostDetail({ id }: { id: string }) {
     close();
   }
   async function reactivate() {
+    if (!post) return;
     await updateDoc(doc(db, 'posts', id), { status: 'active' });
     setPost({ ...post, status: 'active' });
   }

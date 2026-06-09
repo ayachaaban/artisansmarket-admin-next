@@ -10,6 +10,7 @@ import { exportPageTable } from '@/lib/export';
 
 type Post = {
   id: string;
+  artistId?: string;
   artistName?: string;
   category?: string;
   description?: string;

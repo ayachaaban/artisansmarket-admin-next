@@ -10,6 +10,7 @@ import { useDetail } from '@/components/detail-modals';
 type Rating = {
   stars?: number;
   artistId?: string;
+  customerId?: string;
   customerName?: string;
   feedback?: string;
   artistName?: string;
@@ -292,7 +293,7 @@ export default function RatingsPage() {
                             {artist.name || 'Unknown artist'}
                           </div>
                           <div style={{ fontSize: 11, color: '#8E8E8E' }}>
-                            {artist.category ? artist.category + ' · ' : ''}
+                            {artist.category ? `${artist.category} · ` : ''}
                             from {r.customerName || 'a customer'}
                           </div>
                         </div>

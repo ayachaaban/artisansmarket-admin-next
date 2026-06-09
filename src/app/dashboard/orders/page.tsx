@@ -10,6 +10,8 @@ import { exportPageTable } from '@/lib/export';
 
 type Order = {
   id: string;
+  customerId?: string;
+  artistId?: string;
   customerName?: string;
   artistName?: string;
   customerEmail?: string;

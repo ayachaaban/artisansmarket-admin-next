@@ -7,6 +7,7 @@ import { Avatar, toDate } from '@/lib/legacy';
 import { useDetail } from '@/components/detail-modals';
 import { confirmDialog, pushPrompt, toast } from '@/lib/ui';
 import { exportPageTable } from '@/lib/export';
+import { VerifiedPill } from '@/components/verified-pill';
 
 type Artist = {
   id: string;
@@ -16,6 +17,7 @@ type Artist = {
   averageRating?: number;
   status?: string;
   profileImageUrl?: string;
+  emailVerified?: boolean;
   createdAt?: unknown;
 };
 
@@ -128,7 +130,12 @@ export default function ArtistsPage() {
             <Avatar name={a.name} imgUrl={a.profileImageUrl} size={40} />
           </td>
           <td>{a.name || 'N/A'}</td>
-          <td>{a.email || 'N/A'}</td>
+          <td>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              {a.email || 'N/A'}
+              <VerifiedPill verified={a.emailVerified === true} />
+            </span>
+          </td>
           <td>{a.category || 'N/A'}</td>
           <td>{a.averageRating ? a.averageRating.toFixed(1) : 'N/A'}</td>
           <td>

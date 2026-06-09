@@ -38,6 +38,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<AdminProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Idle auto sign-out: 30 min of no mouse/keyboard activity → sign out.
+  // Listeners are attached once; the timer is reset on activity. We only
+  // arm them when there's a signed-in admin to avoid wasted work.
+  useEffect(() => {
+    if (!profile) return;
+    const IDLE_MS = 30 * 60 * 1000;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const trigger = async () => {
+      await fbSignOut(auth);
+    };
+    const reset = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(trigger, IDLE_MS);
+    };
+    const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'] as const;
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    reset();
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, reset));
+      if (timer) clearTimeout(timer);
+    };
+  }, [profile]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
