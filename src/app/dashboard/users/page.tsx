@@ -40,7 +40,7 @@ const ExportIcon = () => (
 
 function roleBadgeClass(role?: string) {
   if (role === 'artist') return 'role-badge role-artist';
-  if (role === 'admin' || role === 'super_admin') return 'role-badge role-admin';
+  if (role === 'admin' || role === 'super_admin' || role === 'super-admin') return 'role-badge role-admin';
   return 'role-badge role-customer';
 }
 function roleLabel(role?: string) {

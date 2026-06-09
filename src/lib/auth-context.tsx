@@ -79,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           try {
             const userSnap = await getDoc(doc(db, 'users', u.uid));
             const data = userSnap.data();
-            if (data && (data.role === 'admin' || data.role === 'super_admin')) {
+            if (data && (data.role === 'admin' || data.role === 'super_admin' || data.role === 'super-admin')) {
               adminData = data;
             }
           } catch {

@@ -2,7 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: 'AIzaSyDQSz_td7B6ih4N9Qql1krBv0OnSY_t5TU',
   authDomain: 'artisansmarket-5f2b6.firebaseapp.com',
   projectId: 'artisansmarket-5f2b6',

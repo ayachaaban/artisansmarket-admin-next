@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { collection, doc, getDoc, getDocs, limit, orderBy, query } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { Avatar, toMillis } from '@/lib/legacy';
-import { toast } from '@/lib/ui';
+import { Avatar, toDate, toMillis } from '@/lib/legacy';
+import { toast, sendBroadcast as runBroadcast } from '@/lib/ui';
 
 type Notif = { id: string; type?: string; userId?: string; isRead?: boolean; createdAt?: unknown };
+type Broadcast = { id: string; title?: string; message?: string; audience?: string; recipients?: number; createdAt?: unknown };
 
 const TYPE_COLORS = ['#2E86AB', '#1B998B', '#A53A33', '#6F8FA3', '#E3A93C', '#B85C38', '#7A9B5C', '#C98A5B'];
 
@@ -22,6 +23,7 @@ export default function NotificationsPage() {
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
   const [activeChip, setActiveChip] = useState('all');
+  const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -37,6 +39,12 @@ export default function NotificationsPage() {
       setNames(map);
     } catch {
       setNotifs([]);
+    }
+    try {
+      const bsnap = await getDocs(query(collection(db, 'broadcasts'), orderBy('createdAt', 'desc'), limit(50)));
+      setBroadcasts(bsnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Broadcast, 'id'>) })));
+    } catch {
+      setBroadcasts([]);
     }
   }, []);
 
@@ -83,11 +91,22 @@ export default function NotificationsPage() {
     </div>
   );
 
-  function sendBroadcast() {
+  const [sending, setSending] = useState(false);
+  async function sendBroadcast() {
     if (!title.trim() || !message.trim()) return toast('Enter a title and message.', 'warning');
-    toast(`Broadcast "${title}" queued for ${audience === 'all' ? 'all users' : audience}.`, 'success');
-    setTitle('');
-    setMessage('');
+    setSending(true);
+    toast('Sending broadcast…', 'info');
+    try {
+      const r = await runBroadcast(audience as 'all' | 'artists' | 'customers', title, message);
+      toast(`Broadcast sent to ${r.recipients} user(s) — ${r.pushed} device(s) reached.`, 'success');
+      setTitle('');
+      setMessage('');
+      load();
+    } catch {
+      toast('Failed to send broadcast.', 'error');
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
@@ -162,8 +181,8 @@ export default function NotificationsPage() {
               <button className="btn-action btn-view" onClick={() => toast(`Audience: ${audience === 'all' ? 'All users' : audience}`, 'info')}>
                 Preview audience
               </button>
-              <button className="btn-action btn-approve" onClick={sendBroadcast}>
-                Send broadcast
+              <button className="btn-action btn-approve" onClick={sendBroadcast} disabled={sending}>
+                {sending ? 'Sending…' : 'Send broadcast'}
               </button>
             </div>
           </div>
@@ -172,10 +191,32 @@ export default function NotificationsPage() {
             <div className="d-flex justify-content-between align-items-center mb-2">
               <h5 className="mb-0">Sent broadcasts</h5>
               <span className="text-muted" style={{ fontSize: 12 }}>
-                0 total
+                {broadcasts.length} total
               </span>
             </div>
-            <div style={{ textAlign: 'center', padding: '24px', color: '#8E8E8E', fontSize: 13 }}>No broadcasts sent yet.</div>
+            {broadcasts.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px', color: '#8E8E8E', fontSize: 13 }}>No broadcasts sent yet.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {broadcasts.map((b) => {
+                  const d = toDate(b.createdAt);
+                  const aud = b.audience === 'all' || !b.audience ? 'All users' : b.audience;
+                  const n = b.recipients ?? 0;
+                  return (
+                    <div key={b.id} style={{ borderBottom: '1px solid #F0F0F0', paddingBottom: 8 }}>
+                      <div className="d-flex justify-content-between" style={{ gap: 8 }}>
+                        <span style={{ fontWeight: 600, fontSize: 13, color: '#2C3E50' }}>{b.title || 'Untitled'}</span>
+                        <span style={{ fontSize: 11, color: '#8E8E8E', whiteSpace: 'nowrap' }}>{d ? d.toLocaleDateString() : ''}</span>
+                      </div>
+                      {b.message && <div style={{ fontSize: 12, color: '#5C6B73', marginTop: 2 }}>{b.message}</div>}
+                      <div style={{ fontSize: 11, color: '#8E8E8E', marginTop: 2 }}>
+                        {aud} · {n} recipient{n === 1 ? '' : 's'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="mt-3" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {[['all', 'All', stats.total] as const, ...stats.types.map((t, i) => [t[0], humanize(t[0]), t[1], i] as const)].map((c, i) => {
                 const id = c[0] as string;

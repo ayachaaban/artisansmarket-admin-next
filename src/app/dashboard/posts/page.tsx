@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { collection, deleteDoc, doc, getDocs, limit, orderBy, query } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDocs, limit, orderBy, query, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toDate } from '@/lib/legacy';
 import { useDetail } from '@/components/detail-modals';
@@ -93,6 +93,36 @@ export default function PostsPage() {
     load();
   }
 
+  // Soft moderation: hide a post from the marketplace (status='removed') and
+  // notify the artist, or restore it (status='active'). Mirrors the mobile app,
+  // which filters on status and shows a removed-state to the artist.
+  async function setPostStatus(p: Post, newStatus: 'removed' | 'active') {
+    const removing = newStatus === 'removed';
+    const ok = await confirmDialog({
+      title: removing ? 'Remove Post' : 'Reactivate Post',
+      message: removing
+        ? 'Hide this post from the marketplace and notify the artist?'
+        : 'Make this post visible in the marketplace again?',
+      confirmText: removing ? 'Remove' : 'Reactivate',
+      type: removing ? 'danger' : 'info',
+    });
+    if (!ok) return;
+    await updateDoc(doc(db, 'posts', p.id), { status: newStatus });
+    if (removing && p.artistId) {
+      await addDoc(collection(db, 'notifications'), {
+        userId: p.artistId,
+        title: 'Post removed',
+        message: 'One of your posts was removed by an administrator for review.',
+        type: 'post_removed',
+        referenceId: p.id,
+        isRead: false,
+        createdAt: serverTimestamp(),
+      });
+    }
+    toast(removing ? 'Post removed.' : 'Post reactivated.', 'success');
+    load();
+  }
+
   const renderRows = () => {
     if (loading)
       return (
@@ -154,6 +184,15 @@ export default function PostsPage() {
           </td>
           <td>{d ? d.toLocaleDateString() : 'N/A'}</td>
           <td>
+            {p.status === 'removed' ? (
+              <button className="btn-action btn-approve" onClick={() => setPostStatus(p, 'active')}>
+                Reactivate
+              </button>
+            ) : (
+              <button className="btn-action btn-view" onClick={() => setPostStatus(p, 'removed')}>
+                Remove
+              </button>
+            )}
             <button className="btn-action btn-delete" onClick={() => remove(p.id)}>
               Delete
             </button>

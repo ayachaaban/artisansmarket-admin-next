@@ -484,7 +484,7 @@ async function renderUserTab(
         <h5 style={{ fontSize: 13, color: '#8E8E8E', margin: '0 0 8px', textTransform: 'uppercase' }}>Wallet</h5>
         <div style={{ fontSize: 28, fontWeight: 700, color: '#262626' }}>{money(wallet ? (wallet.balance as number) : 0)}</div>
         <div style={{ fontSize: 12, color: '#8E8E8E', marginTop: 4 }}>
-          {wallet && wallet.updatedAt ? 'Last updated ' + fmtDateTime(wallet.updatedAt) : 'No wallet record yet'}
+          {wallet && (wallet.lastUpdated ?? wallet.updatedAt) ? 'Last updated ' + fmtDateTime(wallet.lastUpdated ?? wallet.updatedAt) : 'No wallet record yet'}
         </div>
       </div>
     );
@@ -934,8 +934,8 @@ function OrderDetail({ id }: { id: string }) {
     ['Order ID', id],
     ['Customer', `${(order.customerName as string) || 'N/A'} (${(order.customerEmail as string) || ''})`],
     ['Artist', (order.artistName as string) || 'N/A'],
-    ['Subtotal', money(order.subtotal)],
-    ['Total', money(order.total)],
+    ['Total', money(order.total ?? order.totalAmount)],
+    ['Artist Earnings', money(order.artistEarnings)],
     ['Status', oLabel(order.status as string)],
     ['Payment Method', (order.paymentMethod as string) || 'N/A'],
     ['Payout Status', (order.payoutStatus as string) || 'N/A'],

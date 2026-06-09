@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { addDoc, collection, doc, getDoc, serverTimestamp, Timestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, getDocs, serverTimestamp, Timestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
 /* Ported from artisansmarket-admin: showToast / showConfirm / sendPushPrompt.
@@ -64,6 +64,69 @@ async function sendPushToUser(userId: string, title: string, body: string) {
   } catch {
     return { sent: 0, failed: 0 };
   }
+}
+
+/* Real broadcast: writes an in-app notification doc to every targeted user and
+   fans out a single FCM push (via the worker) to all their tokens. Mirrors the
+   per-user PushModal flow. Admins are never targeted by a broadcast. */
+export async function sendBroadcast(
+  audience: 'all' | 'artists' | 'customers',
+  title: string,
+  body: string,
+): Promise<{ recipients: number; pushed: number }> {
+  const usersSnap = await getDocs(collection(db, 'users'));
+  const targets = usersSnap.docs.filter((d) => {
+    const role = (d.data().role as string) || 'customer';
+    if (audience === 'artists') return role === 'artist';
+    if (audience === 'customers') return role === 'customer';
+    return role === 'customer' || role === 'artist';
+  });
+  const allTokens: string[] = [];
+  await Promise.all(
+    targets.map(async (d) => {
+      await addDoc(collection(db, 'notifications'), {
+        userId: d.id,
+        title: title.trim(),
+        message: body.trim(),
+        type: 'broadcast',
+        referenceId: '',
+        isRead: false,
+        createdAt: serverTimestamp(),
+      });
+      const tokens = ((d.data().fcmTokens as string[]) || []).filter((t) => typeof t === 'string' && t.length > 0);
+      allTokens.push(...tokens);
+    }),
+  );
+  let pushed = 0;
+  if (allTokens.length > 0) {
+    try {
+      const res = await fetch(PUSH_WORKER_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Push-Auth': PUSH_AUTH_TOKEN },
+        body: JSON.stringify({ tokens: allTokens, title: title.trim(), body: body.trim() }),
+      });
+      if (res.ok) {
+        const j = (await res.json()) as { sent?: number };
+        pushed = j.sent || 0;
+      }
+    } catch {
+      /* push is best-effort */
+    }
+  }
+  // Log the broadcast so the Notifications page can show a history.
+  try {
+    await addDoc(collection(db, 'broadcasts'), {
+      title: title.trim(),
+      message: body.trim(),
+      audience,
+      recipients: targets.length,
+      pushed,
+      createdAt: serverTimestamp(),
+    });
+  } catch {
+    /* history logging is best-effort */
+  }
+  return { recipients: targets.length, pushed };
 }
 
 const TOAST_ICONS: Record<ToastType, React.ReactNode> = {

@@ -67,7 +67,23 @@ const ICONS: Record<string, React.ReactNode> = {
       <path fillRule="evenodd" d="M15.854 8.354a.5.5 0 0 0 0-.708l-3-3a.5.5 0 0 0-.708.708L14.293 7.5H5.5a.5.5 0 0 0 0 1h8.793l-2.147 2.146a.5.5 0 0 0 .708.708l3-3z" />
     </>
   ),
+  admins: (
+    <path d="M5.072.56C6.157.265 7.31 0 8 0s1.843.265 2.928.56c1.11.3 2.229.655 2.887.87a1.54 1.54 0 0 1 1.044 1.262c.596 4.477-.787 7.795-2.465 9.99a11.8 11.8 0 0 1-2.517 2.453 7.1 7.1 0 0 1-1.048.625c-.28.132-.581.24-.829.24s-.548-.108-.829-.24a7.1 7.1 0 0 1-1.048-.625 11.8 11.8 0 0 1-2.517-2.453C1.262 10.485-.121 7.167.474 2.69A1.54 1.54 0 0 1 1.518 1.43c.658-.215 1.756-.562 2.842-.87Zm.318.95-.002.001a61 61 0 0 0-2.74.827.54.54 0 0 0-.364.42c-.552 4.146.715 7.118 2.25 9.124a10.8 10.8 0 0 0 2.315 2.262c.349.246.648.422.882.531.119.056.218.095.294.118A.5.5 0 0 0 8 15c.025-.005.059-.014.099-.027.076-.023.175-.062.294-.118.234-.11.533-.285.882-.531a10.8 10.8 0 0 0 2.315-2.262c1.536-2.006 2.802-4.978 2.25-9.124a.54.54 0 0 0-.364-.42 61 61 0 0 0-2.74-.827l-.002-.001C9.633 1.224 8.604.998 8 .998c-.604 0-1.633.226-2.61.512Z" />
+  ),
 };
+const isSuper = (r?: string) => r === 'super-admin' || r === 'super_admin';
+
+// Reports the admin has "deleted" from their bell — hidden from the bell only,
+// persisted in this browser. The report itself stays for moderation.
+function getDismissedBellReports(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const v = JSON.parse(localStorage.getItem('dismissedBellReports') || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
 
 const Icon = ({ name }: { name: string }) => (
   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
@@ -75,7 +91,7 @@ const Icon = ({ name }: { name: string }) => (
   </svg>
 );
 
-type NavItem = { page: string; href: string; label: string; badge?: 'reports' | 'deadlines' };
+type NavItem = { page: string; href: string; label: string; badge?: 'reports' | 'deadlines'; superOnly?: boolean };
 
 const NAV: NavItem[] = [
   { page: 'overview', href: '/dashboard/overview', label: 'Dashboard Overview' },
@@ -90,14 +106,16 @@ const NAV: NavItem[] = [
   { page: 'deadlines', href: '/dashboard/deadlines', label: 'Deadlines', badge: 'deadlines' },
   { page: 'broadcast', href: '/dashboard/notifications', label: 'Notifications' },
   { page: 'paymentsPayouts', href: '/dashboard/payments', label: 'Payments & Payouts' },
+  { page: 'admins', href: '/dashboard/admins', label: 'Admin Management', superOnly: true },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { profile, loading, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
-  const [reportsCount, setReportsCount] = useState(0);
+  const [reports, setReports] = useState<{ id: string; reason?: string; createdAt?: unknown }[]>([]);
   const [popupOpen, setPopupOpen] = useState(false);
+  const reportsCount = reports.length;
 
   useEffect(() => {
     if (!loading && !profile) router.replace('/login');
@@ -109,12 +127,42 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         const snap = await getDocs(
           query(collection(db, 'reports'), where('status', '==', 'pending')),
         );
-        setReportsCount(snap.size);
+        const dismissed = getDismissedBellReports();
+        setReports(
+          snap.docs
+            .map((d) => ({ id: d.id, ...(d.data() as { reason?: string; createdAt?: unknown }) }))
+            .filter((r) => !dismissed.includes(r.id)),
+        );
       } catch {
         /* ignore */
       }
     })();
   }, []);
+
+  // Remove from the bell ONLY — hides it from this admin's bell (saved in the
+  // browser); the report stays untouched on the Reports page for moderation.
+  function deleteReport(id: string) {
+    setReports((r) => r.filter((x) => x.id !== id));
+    try {
+      const next = Array.from(new Set([...getDismissedBellReports(), id]));
+      localStorage.setItem('dismissedBellReports', JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Clear every report from the bell at once (bell only — reports are kept).
+  function dismissAllReports() {
+    const ids = reports.map((r) => r.id);
+    if (ids.length === 0) return;
+    setReports([]);
+    try {
+      const next = Array.from(new Set([...getDismissedBellReports(), ...ids]));
+      localStorage.setItem('dismissedBellReports', JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Restore the saved dark-mode preference (shared with the login page).
   useEffect(() => {
@@ -156,7 +204,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           />
         </div>
         <ul className="sidebar-menu">
-          {NAV.map(({ page, href, label, badge }) => {
+          {NAV.filter((n) => !n.superOnly || isSuper(profile.role)).map(({ page, href, label, badge }) => {
             const active = pathname === href || pathname?.startsWith(href + '/');
             const count = badge === 'reports' ? reportsCount : 0;
             return (
@@ -215,16 +263,56 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   <span>Notifications</span>
                   <span className="notification-count">{reportsCount}</span>
                 </div>
-                <div className="notification-popup-body">
-                  {reportsCount > 0 ? (
-                    <Link href="/dashboard/reports" className="notification-empty" style={{ color: 'var(--primary-color)' }}>
-                      {reportsCount} pending report{reportsCount === 1 ? '' : 's'} — review now
-                    </Link>
+                <div className="notification-popup-body" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  {reports.length > 0 ? (
+                    reports.map((r) => (
+                      <div
+                        key={r.id}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: '1px solid #F0F0F0' }}
+                        onTouchStart={(e) => {
+                          (e.currentTarget as HTMLDivElement).dataset.x = String(e.touches[0].clientX);
+                        }}
+                        onTouchEnd={(e) => {
+                          const sx = Number((e.currentTarget as HTMLDivElement).dataset.x || 0);
+                          if (e.changedTouches[0].clientX - sx < -50) deleteReport(r.id);
+                        }}
+                      >
+                        <Link href="/dashboard/reports" style={{ flex: 1, minWidth: 0, color: '#2C3E50', textDecoration: 'none', fontSize: 13 }}>
+                          <span style={{ fontWeight: 600 }}>Report</span>
+                          <span style={{ color: '#8E8E8E' }}> — {r.reason || 'Reported content'}</span>
+                        </Link>
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            deleteReport(r.id);
+                          }}
+                          title="Delete report"
+                          aria-label="Delete report"
+                          style={{ background: 'transparent', border: 'none', color: '#A53A33', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', flexShrink: 0 }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5Zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5Zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6Z" />
+                            <path fillRule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1ZM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118ZM2.5 3V2h11v1h-11Z" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))
                   ) : (
                     <div className="notification-empty">No new notifications</div>
                   )}
                 </div>
-                <div className="notification-popup-footer">
+                <div className="notification-popup-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  {reports.length > 0 ? (
+                    <button
+                      onClick={dismissAllReports}
+                      style={{ background: 'transparent', border: 'none', color: '#A53A33', cursor: 'pointer', fontSize: 13, fontWeight: 600, padding: 0 }}
+                    >
+                      Clear all
+                    </button>
+                  ) : (
+                    <span />
+                  )}
                   <Link href="/dashboard/reports">View All Reports</Link>
                 </div>
               </div>

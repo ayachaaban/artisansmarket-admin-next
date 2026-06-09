@@ -21,6 +21,7 @@ import { confirmDialog, toast } from '@/lib/ui';
 import { exportPageTable } from '@/lib/export';
 
 type WalletRow = { id: string; name: string; email: string; balance: number; totalEarnings: number };
+type PayoutRow = { id: string; artistName: string; amount: number; status: string; method: string; createdAt: unknown };
 const METHOD_COLORS = ['#5B8FA8', '#E8B547', '#7A9B5C', '#D67847', '#B5413B', '#A47A56'];
 
 type Payment = {
@@ -69,7 +70,7 @@ function statusClass(s?: string) {
 }
 
 export default function PaymentsPage() {
-  const [tab, setTab] = useState<'payments' | 'wallets' | 'revenue'>('payments');
+  const [tab, setTab] = useState<'payments' | 'payouts' | 'wallets' | 'revenue'>('payments');
   const [payments, setPayments] = useState<Payment[]>([]);
   const [stats, setStats] = useState({ total: 0, completed: 0, subRevenue: 0, payouts: 0, wallets: 0 });
   const [loading, setLoading] = useState(true);
@@ -79,6 +80,7 @@ export default function PaymentsPage() {
   const [methodF, setMethodF] = useState('');
   const [page, setPage] = useState(1);
   const [walletRows, setWalletRows] = useState<WalletRow[]>([]);
+  const [payoutRows, setPayoutRows] = useState<PayoutRow[]>([]);
   const [walletSearch, setWalletSearch] = useState('');
 
   const load = useCallback(async () => {
@@ -118,11 +120,26 @@ export default function PaymentsPage() {
         total++;
         if (p.status === 'completed') completed += p.amount || 0;
       });
+      // Resolve artist names for the Payouts tab + KPI sum in one pass.
+      const artistName: Record<string, string> = {};
+      artists.docs.forEach((d: { id: string; data: () => { name?: string } }) => {
+        artistName[d.id] = d.data().name || 'Unknown';
+      });
       let payouts = 0;
-      payout.docs.forEach((d: { data: () => { status?: string; amount?: number } }) => {
+      const poRows: PayoutRow[] = [];
+      payout.docs.forEach((d: { id: string; data: () => { artistId?: string; artistName?: string; status?: string; amount?: number; method?: string; createdAt?: unknown } }) => {
         const x = d.data();
         if (x.status === 'completed') payouts += x.amount || 0;
+        poRows.push({
+          id: d.id,
+          artistName: x.artistName || artistName[x.artistId || ''] || 'Unknown',
+          amount: x.amount || 0,
+          status: x.status || 'pending',
+          method: x.method || 'virtual_visa',
+          createdAt: x.createdAt,
+        });
       });
+      setPayoutRows(poRows);
       let subRevenue = 0;
       subs.docs.forEach((d: { data: () => { status?: string; amount?: number } }) => {
         const s = d.data();
@@ -233,7 +250,7 @@ export default function PaymentsPage() {
     <div className="page-content active" id="paymentsPayoutsPage">
       <div className="d-flex justify-content-between align-items-center mb-2">
         <h2 className="page-title mb-0">Payments &amp; Payouts</h2>
-        <button className="btn-export" onClick={() => exportPageTable(tab === 'payments' ? 'payments' : tab === 'wallets' ? 'artist-wallets' : 'revenue')}>
+        <button className="btn-export" onClick={() => exportPageTable(tab === 'payments' ? 'payments' : tab === 'payouts' ? 'payouts' : tab === 'wallets' ? 'artist-wallets' : 'revenue')}>
           <ExportIcon />
           Export Excel
         </button>
@@ -275,6 +292,11 @@ export default function PaymentsPage() {
           </button>
         </li>
         <li className="nav-item">
+          <button className={'nav-link' + (tab === 'payouts' ? ' active' : '')} onClick={() => setTab('payouts')}>
+            Payouts
+          </button>
+        </li>
+        <li className="nav-item">
           <button className={'nav-link' + (tab === 'wallets' ? ' active' : '')} onClick={() => setTab('wallets')}>
             Artist Wallets
           </button>
@@ -286,7 +308,47 @@ export default function PaymentsPage() {
         </li>
       </ul>
 
-      {tab === 'wallets' ? (
+      {tab === 'payouts' ? (
+        <div className="table-responsive">
+          <table className="table custom-table">
+            <thead>
+              <tr>
+                <th>Payout ID</th>
+                <th>Artist</th>
+                <th>Amount</th>
+                <th>Method</th>
+                <th>Status</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={6} className="text-center">Loading...</td></tr>
+              ) : payoutRows.length === 0 ? (
+                <tr><td colSpan={6} className="text-center">No payouts found</td></tr>
+              ) : (
+                payoutRows.map((po) => {
+                  const d = toDate(po.createdAt);
+                  return (
+                    <tr key={po.id}>
+                      <td>{po.id.substring(0, 8)}...</td>
+                      <td>{po.artistName}</td>
+                      <td>${po.amount.toFixed(2)}</td>
+                      <td>
+                        <span className={'payment-method-badge payment-' + po.method}>{fmtMethod(po.method)}</span>
+                      </td>
+                      <td>
+                        <span className={'status-badge status-' + statusClass(po.status)}>{po.status}</span>
+                      </td>
+                      <td>{d ? d.toLocaleDateString() : 'N/A'}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : tab === 'wallets' ? (
         <>
           <div className="filters mb-3">
             <input

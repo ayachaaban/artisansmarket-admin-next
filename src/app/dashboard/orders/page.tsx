@@ -17,6 +17,7 @@ type Order = {
   customerEmail?: string;
   items?: unknown[];
   total?: number;
+  totalAmount?: number;
   status?: string;
   paymentMethod?: string;
   method?: string;
@@ -100,7 +101,7 @@ export default function OrdersPage() {
       total++;
       if (o.status === 'pending' || o.status === 'paid') pending++;
       if (o.status === 'delivered') delivered++;
-      if (o.status !== 'cancelled' && o.status !== 'refunded') revenue += o.total || 0;
+      if (o.status !== 'cancelled' && o.status !== 'refunded') revenue += o.total ?? o.totalAmount ?? 0;
     });
     return { total, pending, delivered, revenue };
   }, [all]);
@@ -191,7 +192,7 @@ export default function OrdersPage() {
           <td>{o.customerName || 'N/A'}</td>
           <td>{o.artistName || 'N/A'}</td>
           <td>{(o.items || []).length} item(s)</td>
-          <td>${(o.total || 0).toFixed(2)}</td>
+          <td>${(o.total ?? o.totalAmount ?? 0).toFixed(2)}</td>
           <td>
             <span className={'status-badge status-' + statusClass(o.status)}>{statusLabel(o.status)}</span>
           </td>
@@ -257,11 +258,8 @@ export default function OrdersPage() {
         </select>
         <select className="form-select filter-select" value={methodF} onChange={(e) => setMethodF(e.target.value)}>
           <option value="">All Methods</option>
-          <option value="visa">Visa</option>
-          <option value="mastercard">Mastercard</option>
-          <option value="amex">Amex</option>
-          <option value="card">Other card</option>
-          <option value="credit_card">Credit card (legacy)</option>
+          <option value="virtual_card">Virtual Card</option>
+          <option value="virtual_visa">Virtual Visa</option>
         </select>
         <span className="text-muted" style={{ fontSize: 13 }}>
           From
