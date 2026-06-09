@@ -724,6 +724,8 @@ function ReportDetail({ id }: { id: string }) {
   const { close, openUser, openPost } = useDetail();
   const [report, setReport] = useState<Doc | null>(null);
   const [missing, setMissing] = useState(false);
+  const [post, setPost] = useState<Doc | null>(null);
+  const [postLoading, setPostLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -732,6 +734,20 @@ function ReportDetail({ id }: { id: string }) {
       setReport(d.data());
     })();
   }, [id]);
+
+  useEffect(() => {
+    const postId = report?.postId as string | undefined;
+    if (!postId) return;
+    setPostLoading(true);
+    (async () => {
+      try {
+        const p = await getDoc(doc(db, 'posts', postId));
+        setPost(p.exists() ? p.data() : null);
+      } finally {
+        setPostLoading(false);
+      }
+    })();
+  }, [report?.postId]);
 
   if (missing) return <ModalShell title="Report Details" onClose={close}><Empty msg="Report not found." /></ModalShell>;
   if (!report) return <ModalShell title="Report Details" onClose={close}><Empty msg="Loading…" /></ModalShell>;
@@ -787,7 +803,95 @@ function ReportDetail({ id }: { id: string }) {
             </div>
           </div>
         </div>
-        <div style={{ padding: 20 }}>
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {report.postId ? (
+            <div className="u360-card" style={{ padding: 14 }}>
+              <h5 style={{ margin: '0 0 10px', fontSize: 14, color: '#262626' }}>Reported post</h5>
+              {postLoading ? (
+                <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading post…</div>
+              ) : post ? (
+                <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                  <div
+                    style={{
+                      position: 'relative',
+                      width: 140,
+                      height: 140,
+                      flexShrink: 0,
+                      borderRadius: 10,
+                      overflow: 'hidden',
+                      background: '#000',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => openPost(report.postId as string)}
+                    title="Open post 360°"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={
+                        (post.mediaType === 'reel'
+                          ? (post.thumbnailUrl as string) || (post.imageUrl as string)
+                          : (post.imageUrl as string)) || 'https://via.placeholder.com/280'
+                      }
+                      alt="Reported post"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                    {post.mediaType === 'reel' && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          background: 'rgba(0,0,0,0.25)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'white',
+                          fontSize: 28,
+                        }}
+                      >
+                        ▶
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 600, color: '#262626' }}>
+                      by{' '}
+                      <span
+                        style={{ textDecoration: 'underline', cursor: 'pointer' }}
+                        onClick={() => openUser(post.artistId as string)}
+                      >
+                        {(post.artistName as string) || 'Unknown artist'}
+                      </span>
+                    </p>
+                    <p style={{ margin: '0 0 8px', fontSize: 13, color: '#5C6B73', lineHeight: 1.5 }}>
+                      {(post.description as string) || '(no description)'}
+                    </p>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {post.category ? (
+                        <span className="status-badge" style={{ background: 'rgba(245,158,11,0.15)', color: '#F59E0B' }}>
+                          {post.category as string}
+                        </span>
+                      ) : null}
+                      <span
+                        className="status-badge"
+                        style={
+                          (post.status as string) === 'removed'
+                            ? { background: 'rgba(165,58,51,0.10)', color: '#A53A33' }
+                            : { background: 'rgba(27,153,139,0.10)', color: '#1B998B' }
+                        }
+                      >
+                        {(post.status as string) || 'active'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: 16, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>
+                  Post not found (may have been deleted).
+                </div>
+              )}
+            </div>
+          ) : null}
+
           <div className="u360-card">
             <h5 style={{ margin: '0 0 10px', fontSize: 14, color: '#262626' }}>Details</h5>
             <Row l="Reason" v={reason} />
@@ -796,6 +900,7 @@ function ReportDetail({ id }: { id: string }) {
             <Row l="Description" v={(report.description as string) || '—'} />
             <Row l="Created" v={fmtDateTime(report.createdAt)} />
           </div>
+
           {report.postId ? (
             <button className="btn-action btn-view" onClick={() => openPost(report.postId as string)}>
               View reported post
