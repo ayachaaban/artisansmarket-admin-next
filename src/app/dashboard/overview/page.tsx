@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   collection,
   doc,
@@ -27,10 +28,10 @@ type ListItem = {
 type Event = { ts: number; color: string; text: React.ReactNode; sub?: string };
 
 const QUICK = [
-  { title: 'Send notification', desc: 'Broadcast to users', color: '#2E86AB' },
-  { title: 'Deadlines', desc: 'Monitor orders', color: '#1B998B' },
-  { title: 'Triage reports', desc: 'Review flagged', color: '#A53A33' },
-  { title: 'Reviews', desc: 'Customer feedback', color: '#E3A93C' },
+  { title: 'Send notification', desc: 'Broadcast to users', color: '#2E86AB', href: '/dashboard/notifications' },
+  { title: 'Deadlines', desc: 'Monitor orders', color: '#1B998B', href: '/dashboard/deadlines' },
+  { title: 'Triage reports', desc: 'Review flagged', color: '#A53A33', href: '/dashboard/reports' },
+  { title: 'Reviews', desc: 'Customer feedback', color: '#E3A93C', href: '/dashboard/ratings' },
 ];
 
 function safeDocs(s: { docs: unknown[] } | null): { id: string; data: () => Row }[] {
@@ -39,6 +40,7 @@ function safeDocs(s: { docs: unknown[] } | null): { id: string; data: () => Row 
 }
 
 export default function OverviewPage() {
+  const router = useRouter();
   const { openOrder, openReport, openUser } = useDetail();
   const [pulse, setPulse] = useState<PulseItem[] | null>(null);
   const [overdue, setOverdue] = useState<ListItem[]>([]);
@@ -401,7 +403,12 @@ export default function OverviewPage() {
               <div className="chart-card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <h5 style={{ margin: 0, fontSize: 14, color: '#262626' }}>Overdue orders</h5>
-                  <span style={{ fontSize: 11, color: '#8E8E8E', textDecoration: 'underline' }}>View all</span>
+                  <span
+                    onClick={() => router.push('/dashboard/deadlines')}
+                    style={{ fontSize: 11, color: '#8E8E8E', textDecoration: 'underline', cursor: 'pointer' }}
+                  >
+                    View all
+                  </span>
                 </div>
                 <div>{renderList(overdue, 'No overdue orders. Nice.', true, openOrder)}</div>
               </div>
@@ -410,7 +417,12 @@ export default function OverviewPage() {
               <div className="chart-card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <h5 style={{ margin: 0, fontSize: 14, color: '#262626' }}>Pending reports</h5>
-                  <span style={{ fontSize: 11, color: '#8E8E8E', textDecoration: 'underline' }}>View all</span>
+                  <span
+                    onClick={() => router.push('/dashboard/reports')}
+                    style={{ fontSize: 11, color: '#8E8E8E', textDecoration: 'underline', cursor: 'pointer' }}
+                  >
+                    View all
+                  </span>
                 </div>
                 <div>{renderList(pendingReports, 'No pending reports.', false, openReport)}</div>
               </div>
@@ -517,7 +529,12 @@ export default function OverviewPage() {
               }}
             >
               For trends and date-range analysis, open{' '}
-              <span style={{ color: '#2E86AB', textDecoration: 'underline' }}>Analytics →</span>
+              <span
+                onClick={() => router.push('/dashboard/analytics')}
+                style={{ color: '#2E86AB', textDecoration: 'underline', cursor: 'pointer' }}
+              >
+                Analytics →
+              </span>
             </div>
           </div>
           <div className="chart-card" style={{ padding: 14 }}>
@@ -527,6 +544,7 @@ export default function OverviewPage() {
                 <button
                   key={q.title}
                   className="quick-action-tile"
+                  onClick={() => router.push(q.href)}
                   style={{
                     background: hexAlpha(q.color, 0.1),
                     border: `1.5px solid ${hexAlpha(q.color, 0.45)}`,

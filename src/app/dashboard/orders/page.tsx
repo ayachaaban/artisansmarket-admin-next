@@ -60,6 +60,15 @@ function statusLabel(status?: string) {
   };
   return map[status || ''] || status || 'Unknown';
 }
+// Turns a raw payment-method key (e.g. "virtual_visa") into a readable
+// label ("Virtual Visa"), matching the Payments page formatting.
+function fmtMethod(m?: string) {
+  if (!m) return 'N/A';
+  return m
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
 const IN_FLIGHT = ['pending', 'in_progress', 'shipping', 'paid', 'processing', 'shipped'];
 
 export default function OrdersPage() {
@@ -197,8 +206,8 @@ export default function OrdersPage() {
             <span className={'status-badge status-' + statusClass(o.status)}>{statusLabel(o.status)}</span>
           </td>
           <td>
-            <span className={'payment-method-badge payment-' + (o.paymentMethod || 'stripe')}>
-              {o.paymentMethod || 'N/A'}
+            <span className={'payment-method-badge payment-' + (o.paymentMethod || o.method || 'stripe')}>
+              {fmtMethod(o.paymentMethod || o.method)}
             </span>
           </td>
           <td>{d ? d.toLocaleDateString() : 'N/A'}</td>

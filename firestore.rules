@@ -108,8 +108,12 @@ service cloud.firestore {
     function validSubPlans()       { return ['free','basic','premium','pro']; } // 'pro' kept for back-compat
     function validSubStatuses()    { return ['active','expired','cancelled']; }
     function validCancelTiers() {
-      return ['full_refund','small_penalty','mid_penalty','max_penalty',
-              'post_shipping','over_extended','admin_full_refund'];
+      // Current OrderPolicy tiers (must match lib/services/order_policy.dart),
+      // plus the legacy names kept for back-compat with older order docs.
+      return ['pre_accept','free_window','over_extended','post_ship',
+              'early','mid_early','mid_late','late','unknown',
+              'full_refund','small_penalty','mid_penalty','max_penalty',
+              'post_shipping','admin_full_refund'];
     }
     function validNotifTypes() {
       return [
@@ -196,9 +200,9 @@ service cloud.firestore {
              d.artistId is string && d.artistId.size() > 0 &&
              d.artistId != request.auth.uid &&
              d.items is list && d.items.size() > 0 && d.items.size() <= 50 &&
-             isInRange(d.total, 0, 999999) &&
-             (d.get('subtotal', null) == null ||
-                isInRange(d.get('subtotal', null), 0, 999999)) &&
+             isInRange(d.totalAmount, 0, 999999) &&
+             (d.get('artistEarnings', null) == null ||
+                isInRange(d.get('artistEarnings', null), 0, 999999)) &&
              (d.get('platformFee', null) == null ||
                 isInRange(d.get('platformFee', null), 0, 999999)) &&
              isOneOf(d.status, validOrderStatuses()) &&
@@ -381,7 +385,7 @@ service cloud.firestore {
           (!changed('customerId')) &&
           (!changed('artistId')) &&
           (!changed('status')        || isOneOf(request.resource.data.status, validOrderStatuses())) &&
-          (!changed('total')         || isInRange(request.resource.data.total, 0, 999999)) &&
+          (!changed('totalAmount')   || isInRange(request.resource.data.totalAmount, 0, 999999)) &&
           (!changed('paymentMethod') || isOneOf(request.resource.data.paymentMethod, validPaymentMethods())) &&
           (!changed('cancellationTier') || isOneOf(request.resource.data.cancellationTier, validCancelTiers())) &&
           (!changed('refundAmount')  || isInRange(request.resource.data.refundAmount, 0, 999999)) &&
@@ -428,8 +432,13 @@ service cloud.firestore {
 
     // Conversations + messages
     match /conversations/{conversationId} {
+      // `resource == null` lets a signed-in user probe a not-yet-created
+      // conversation (the create-or-get existence check). It returns no data,
+      // so it leaks nothing — existing docs still require participant access.
       allow get: if isAdmin() ||
-        (isAuthenticated() && request.auth.uid in resource.data.participants);
+        (isAuthenticated() &&
+          (resource == null ||
+           request.auth.uid in resource.data.participants));
       allow list: if isAdmin() ||
         (isAuthenticated() && request.auth.uid in resource.data.participants);
       allow create: if isAuthenticated() && validConversationCreate(request.resource.data);
